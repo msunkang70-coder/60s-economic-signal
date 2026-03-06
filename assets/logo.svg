@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="160" height="40">
+  <defs>
+    <linearGradient id="mgrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#3b82f6"/>
+      <stop offset="50%"  stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#93c5fd"/>
+    </linearGradient>
+  </defs>
+
+  <!-- M lettermark (geometric) -->
+  <!-- Left vertical bar -->
+  <rect x="4" y="8" width="10" height="56" rx="2" fill="url(#mgrad)"/>
+  <!-- Left diagonal (up-right) -->
+  <polygon points="14,8 14,64 30,36 30,8" fill="url(#mgrad)" opacity="0.9"/>
+  <!-- Right diagonal (down-right) -->
+  <polygon points="30,8 30,36 46,64 46,36" fill="url(#mgrad)" opacity="0.85"/>
+  <!-- Right vertical bar -->
+  <rect x="46" y="8" width="10" height="56" rx="2" fill="url(#mgrad)" opacity="0.9"/>
+
+  <!-- MSion wordmark -->
+  <text x="72" y="51" font-family="'Segoe UI', Arial, sans-serif" font-size="34"
+        font-weight="700" letter-spacing="-0.5" fill="#ffffff">
+    <tspan font-weight="900">M</tspan><tspan fill="#60a5fa" font-weight="900">S</tspan><tspan fill="#e2e8f0" font-weight="400">ion</tspan>
+  </text>
+</svg>

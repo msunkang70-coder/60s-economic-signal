@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# SQLite DB (로컬 히스토리 — GitHub에 올리지 않음)
+data/history.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# 로컬 임시 파일
+*.tmp
+*.bak
+
+# outputs 내 개인 테스트 파일 (자동 생성 파일은 GitHub Actions가 커밋)
+# output_script.txt / output_script.srt / latest_output_script.txt 는 추적 대상
+# 60초경제신호_SaaS_전략로드맵.docx — 로컬 기획 문서 (커밋 불필요)
+60초경제신호_SaaS_전략로드맵.docx

@@ -1,0 +1,132 @@
+name: 월간 경제신호 자동 생성
+
+# ── 트리거 설정 ───────────────────────────────────────────────
+on:
+  schedule:
+    # 매월 2일 09:00 KST (= 00:00 UTC) 자동 실행
+    # KDI 나라경제는 매월 초에 신규 이슈 발행
+    - cron: '0 0 2 * *'
+
+  # Actions 탭에서 수동 실행 가능 (테스트·임시 생성)
+  workflow_dispatch:
+    inputs:
+      force_refresh:
+        description: 'ECOS 거시지표 강제 갱신'
+        required: false
+        default: 'true'
+        type: boolean
+
+# ── 권한: outputs 커밋을 위해 contents: write 필요 ─────────────
+permissions:
+  contents: write
+
+# ── 잡 정의 ──────────────────────────────────────────────────
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── 1. 코드 체크아웃 ─────────────────────────────────────
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      # ── 2. Python 설정 ───────────────────────────────────────
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      # ── 3. 의존성 설치 ───────────────────────────────────────
+      - name: 의존성 설치
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. ECOS 거시지표 갱신 (API 키 있을 때만 유효) ────────
+      #       GitHub Secret: Settings → Secrets → ECOS_API_KEY
+      #       키 없거나 API 실패해도 다음 단계 계속 진행
+      - name: ECOS 거시지표 갱신
+        env:
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+        run: python -m core.ecos
+        continue-on-error: true
+
+      # ── 5. 60초 스크립트 생성 ───────────────────────────────
+      - name: 60초 스크립트 생성
+        run: python main.py
+
+      # ── 6. outputs 복사: latest_output_script.txt 갱신 ──────
+      - name: latest 파일 갱신
+        run: cp outputs/output_script.txt outputs/latest_output_script.txt
+
+      # ── 7. [로그] macro.json 갱신 확인 ──────────────────────
+      #       환율·CPI·수출증가율 value/as_of 필드만 추출해 출력
+      - name: "[확인] macro.json 주요 값"
+        run: |
+          echo "=== macro.json (value / as_of) ==="
+          python - <<'PY'
+          import json, pathlib
+          data = json.loads(pathlib.Path("data/macro.json").read_text(encoding="utf-8"))
+          for label, d in data.items():
+              print(f"  {label:20s}  {d.get('value','?'):>8} {d.get('unit',''):<5}  기준일: {d.get('as_of','?')}")
+          PY
+
+      # ── 8. [로그] output_script.txt 전체 출력 ───────────────
+      - name: "[확인] output_script.txt"
+        run: |
+          echo "=== outputs/output_script.txt ==="
+          cat outputs/output_script.txt
+
+      # ── 9. [확인] content_db.json 갱신 내용 출력 ────────────
+      - name: "[확인] content_db.json 최신 레코드"
+        run: |
+          echo "=== data/content_db.json (최신 1건) ==="
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("data/content_db.json")
+          if p.exists():
+              records = json.loads(p.read_text(encoding="utf-8"))
+              if records:
+                  r = records[0]
+                  print(f"  content_id : {r.get('content_id','?')}")
+                  print(f"  date       : {r.get('date','?')}")
+                  print(f"  topic      : {r.get('topic','?')}")
+                  print(f"  script_path: {r.get('script_path','?')}")
+                  print(f"  srt_path   : {r.get('srt_path','?')}")
+              else:
+                  print("  (레코드 없음)")
+          else:
+              print("  content_db.json 파일 없음")
+          PY
+
+      # ── 10. 결과 파일 커밋 & 푸시 ───────────────────────────
+      - name: 결과 커밋 & 푸시
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add \
+            data/macro.json \
+            data/content_db.json \
+            outputs/output_script.txt \
+            outputs/latest_output_script.txt \
+            outputs/output_script.srt
+          # 변경이 없으면 커밋 건너뜀 (멱등)
+          git diff --cached --quiet || \
+            git commit -m "chore: 월간 경제신호 자동 생성 $(date -u +'%Y-%m-%d')"
+          git push
+
+      # ── 11. 이메일 발송 ─────────────────────────────────────
+      #       GitHub Secret 3개 설정 시 자동 활성화:
+      #         EMAIL_SENDER       → 발신자 Gmail 주소
+      #         EMAIL_PASSWORD     → Gmail 앱 비밀번호 (16자리)
+      #         EMAIL_RECIPIENTS   → 수신자 주소 (쉼표 구분)
+      #       Secret 없으면 건너뜀 — 메인 파이프라인에 영향 없음
+      - name: 이메일 발송
+        env:
+          EMAIL_SENDER:     ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD:   ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+        run: python -m core.emailer
+        continue-on-error: true

@@ -1,0 +1,24 @@
+# .streamlit/config.toml
+# Streamlit Cloud 및 로컬 공통 설정
+# 참고: https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+
+[theme]
+base            = "light"
+primaryColor    = "#3a5fc8"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f5f5"
+textColor       = "#222222"
+font            = "sans serif"
+
+[server]
+# Streamlit Cloud에서는 headless=true가 자동 적용됨
+headless        = true
+enableXsrfProtection = true
+
+[browser]
+# 로컬 실행 시 자동으로 브라우저 열기 (Cloud에서는 무시됨)
+gatherUsageStats = false
+
+[runner]
+# 파일 변경 시 자동 재실행
+fastReruns      = true
