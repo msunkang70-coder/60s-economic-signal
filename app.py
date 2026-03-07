@@ -2768,7 +2768,56 @@ def render_ui() -> None:
             if st.button("📩 피드백 제출", use_container_width=True, key="btn_feedback"):
                 save_feedback(_sel_ind, _fb_use, _fb_text)
                 log_event("feedback_submit", {"industry": _sel_ind, "would_use": _fb_use})
-                st.success("감사합니다! 피드백이 저장되었습니다.")
+                st.html("""
+                <div style="
+                    background: #FFFDE7;
+                    border: 2px solid #FFF59D;
+                    border-radius: 22px;
+                    padding: 28px 24px;
+                    margin: 12px 0;
+                    position: relative;
+                    box-shadow: 0 4px 24px rgba(255,235,59,0.18);
+                    overflow: hidden;
+                ">
+                  <!-- 모서리 꽃 (큰) -->
+                  <span style="position:absolute;top:10px;left:14px;font-size:22px;opacity:0.85;line-height:1">🌼</span>
+                  <span style="position:absolute;top:10px;right:14px;font-size:22px;opacity:0.85;line-height:1">🌼</span>
+                  <span style="position:absolute;bottom:10px;left:14px;font-size:20px;opacity:0.75;line-height:1">🌼</span>
+                  <span style="position:absolute;bottom:10px;right:14px;font-size:20px;opacity:0.75;line-height:1">🌼</span>
+                  <!-- 사이드 꽃 (중간) -->
+                  <span style="position:absolute;top:44%;left:6px;font-size:15px;opacity:0.55;line-height:1">🌼</span>
+                  <span style="position:absolute;top:44%;right:6px;font-size:15px;opacity:0.55;line-height:1">🌼</span>
+                  <!-- 상하 가운데 꽃 (작은) -->
+                  <span style="position:absolute;top:8px;left:50%;transform:translateX(-50%);font-size:13px;opacity:0.5;line-height:1">🌼</span>
+                  <span style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:13px;opacity:0.5;line-height:1">🌼</span>
+
+                  <!-- 내부 흰 카드 -->
+                  <div style="
+                      background: rgba(255,255,255,0.82);
+                      border-radius: 14px;
+                      padding: 22px 20px 20px;
+                      text-align: center;
+                      backdrop-filter: blur(4px);
+                  ">
+                    <div style="font-size:30px;margin-bottom:8px;line-height:1">💛</div>
+                    <div style="
+                        font-size:16px;
+                        font-weight:800;
+                        color:#795548;
+                        letter-spacing:0.5px;
+                        margin-bottom:6px;
+                    ">감사합니다!</div>
+                    <div style="
+                        font-size:12.5px;
+                        color:#8D6E63;
+                        line-height:1.8;
+                    ">
+                      소중한 피드백이 잘 저장되었습니다.<br>
+                      더 좋은 서비스를 만드는 데 큰 힘이 됩니다 🌻
+                    </div>
+                  </div>
+                </div>
+                """)
 
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
