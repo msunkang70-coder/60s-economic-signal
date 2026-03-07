@@ -906,6 +906,58 @@ def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
     </div>
     """)
 
+def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
+    """기사 관련 산업 전략 질문 표시."""
+    if industry_key == "일반":
+        return
+    profile = get_profile(industry_key)
+    templates = profile.get("strategy_templates", [])
+    keywords = profile.get("keywords", [])
+    title = doc.get("title", "")
+
+    matched_kw = [kw for kw in keywords if kw in title]
+    if not matched_kw or not templates:
+        return
+
+    _nc = _SEMANTIC_COLORS["neutral"]
+    st.html(f"""
+    <div style="background:{_nc['bg']};border:1px solid {_nc['border']};border-radius:10px;
+                padding:14px 16px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;color:{_nc['text']};margin-bottom:8px">
+        🎯 이 기사를 바탕으로 검토할 전략 질문
+      </div>
+    </div>
+    """)
+    for tmpl in templates[:2]:
+        question = tmpl.format(kw=matched_kw[0] if matched_kw else "")
+        st.markdown(f"- {question}")
+
+
+def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
+    """정책 기사의 산업별 영향 해석 카드."""
+    if industry_key == "일반":
+        return
+    profile = get_profile(industry_key)
+    title = doc.get("title", "")
+
+    keywords = profile.get("keywords", [])
+    matched = [kw for kw in keywords if kw in title]
+    if not matched:
+        return
+
+    _wc = _SEMANTIC_COLORS["watch"]
+    st.html(f"""
+    <div style="background:{_wc['bg']};border:1px solid {_wc['border']};border-radius:10px;
+                padding:14px 16px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;color:{_wc['text']};margin-bottom:6px">
+        {profile['icon']} {profile['label']} 영향 분석
+      </div>
+      <div style="font-size:12px;color:#1e293b">
+        이 정책은 <b>{', '.join(matched[:3])}</b> 관련 내용으로, {profile['label']} 산업에 직접 영향이 예상됩니다.
+      </div>
+    </div>
+    """)
+
 
 # ══════════════════════════════════════════════════════
 # 리포트 생성 함수
