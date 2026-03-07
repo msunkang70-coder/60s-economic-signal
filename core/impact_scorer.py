@@ -56,16 +56,29 @@ def _keyword_score(text: str, industry_key: str) -> float:
     return min(30.0, score)
 
 
-def _macro_score(macro_data: dict | None, industry_key: str) -> float:
-    """B. 임계값 초과 지표 수 × macro_weights (상한 30)."""
+def _macro_score(text: str, macro_data: dict | None, industry_key: str) -> float:
+    """B. 기사 내 거시지표 키워드가 언급되고 + 해당 지표가 임계값 초과일 때만 가산."""
     if not macro_data:
         return 0.0
 
     profile = get_profile(industry_key)
     weights = profile.get("macro_weights", {})
 
+    _MACRO_KW_MAP = {
+        "환율(원/$)": ["환율", "원달러", "달러", "원화"],
+        "소비자물가(CPI)": ["물가", "CPI", "인플레이션"],
+        "수출증가율": ["수출", "수출액", "수출 증가"],
+        "기준금리": ["금리", "기준금리", "한은"],
+        "수입물가지수": ["수입물가", "수입 원가"],
+        "수출물가지수": ["수출물가", "수출 단가"],
+        "원/100엔 환율": ["엔화", "엔환율", "100엔"],
+    }
+
     score = 0.0
     for indicator, weight in weights.items():
+        kw_list = _MACRO_KW_MAP.get(indicator, [])
+        if not any(kw in text for kw in kw_list):
+            continue
         data = macro_data.get(indicator)
         if not data or not isinstance(data, dict):
             continue
@@ -73,7 +86,6 @@ def _macro_score(macro_data: dict | None, industry_key: str) -> float:
             val = float(str(data.get("value", "0")).replace(",", "").replace("+", ""))
         except (ValueError, TypeError):
             continue
-
         lo, hi = _MACRO_THRESHOLDS.get(indicator, (None, None))
         if lo is not None and hi is not None:
             if val < lo or val > hi:
@@ -135,7 +147,7 @@ def score_article(
     text += " " + article.get("summary_3lines", "")
 
     a = _keyword_score(text, industry_key)
-    b = _macro_score(macro_data, industry_key)
+    b = _macro_score(text, macro_data, industry_key)
     c = _policy_score(text)
     d = _urgency_score(text)
 

@@ -864,7 +864,7 @@ def fetch_list(url: str, top_n: int = 20) -> list[dict]:
     return result
 
 
-def fetch_detail(doc_id: str, url: str, title: str = "") -> dict:
+def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "일반") -> dict:
     """
     Detail 단계: 개별 문서 본문·요약·키워드 수집 (사용자 클릭 시).
 
@@ -1026,7 +1026,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "") -> dict:
     summary        = ""
     summary_source = "rule"
     try:
-        result = summarize_rule_based(body_text, title=title)
+        result = summarize_rule_based(body_text, title=title, industry_key=industry_key)
         # summarize_3line은 (text, source) 튜플 반환
         if isinstance(result, tuple):
             summary, summary_source = result
