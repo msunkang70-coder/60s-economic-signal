@@ -774,23 +774,43 @@ def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:
     _LABEL_BG = {"green": "#dcfce7", "yellow": "#fef3c7", "red": "#fee2e2"}
     _LABEL_FG = {"green": "#15803d", "yellow": "#92400e", "red": "#991b1b"}
 
+    # ── 질문별 연계 신호 사전 할당 (중복 없이) ────────────────────────
+    # 키워드 → 지표명 부분문자열 우선순위 매핑
+    _Q_TO_SIG = [
+        (["환율", "원화", "달러"],                 "환율"),
+        (["수출", "수요", "시장", "수주", "AI", "반도체", "무역"], "수출증가율"),
+        (["물가", "비용", "원가", "CPI", "인플레"],  "소비자물가"),
+        (["금리", "금융", "투자", "자금"],           "기준금리"),
+        (["규제", "통제", "제재"],                  "수출증가율"),  # 규제 → 수출 연계
+    ]
+
+    def _pick_signal(question: str, pool: list) -> dict | None:
+        """풀에서 질문에 가장 맞는 신호 하나 반환 (사용 후 풀에서 제거)."""
+        for q_kws, lbl_part in _Q_TO_SIG:
+            if any(kw in question for kw in q_kws):
+                for sig in pool:
+                    if lbl_part in sig["label"]:
+                        pool.remove(sig)
+                        return sig
+        # fallback: 풀의 첫 번째
+        return pool.pop(0) if pool else None
+
+    _sig_pool = list(_all_sigs)  # 복사본 (원본 보존)
+    _related_sigs = [_pick_signal(q, _sig_pool) for q in qs]
+    # 남은 슬롯은 남은 풀로 채움
+    for idx, rs in enumerate(_related_sigs):
+        if rs is None and _all_sigs:
+            _related_sigs[idx] = _all_sigs[min(idx, len(_all_sigs) - 1)]
+    # ─────────────────────────────────────────────────────────────────
+
     for i, q in enumerate(qs):
         items = generate_checklist(q, doc, _ind)
         checklist_html = "".join(
             f'<li style="margin-bottom:4px">☐ {item}</li>' for item in items
         )
 
-        # 질문과 관련된 거시 신호 찾기 (키워드 매칭)
-        related_sig = None
-        q_lower = q.lower()
-        for sig in _all_sigs[:4]:
-            if any(kw in q_lower for kw in ["환율", "금리", "물가", "수출", "수요", "규제"]):
-                label_kw = sig["label"].replace("(원/$)", "").replace("(CPI)", "")
-                if label_kw.rstrip() in q or sig["color"] != "yellow":
-                    related_sig = sig
-                    break
-        if not related_sig and _all_sigs:
-            related_sig = _all_sigs[0]
+        # 사전 할당된 연계 신호 사용 (루프 밖에서 중복 없이 배정됨)
+        related_sig = _related_sigs[i] if i < len(_related_sigs) else None
 
         color       = related_sig["color"] if related_sig else "yellow"
         emoji       = related_sig["emoji"] if related_sig else "🟡"
