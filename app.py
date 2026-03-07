@@ -716,6 +716,33 @@ def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:  
                 st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ 확인: {item}")
 
 
+def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
+    """기사 관련 산업 전략 질문 표시."""
+    if industry_key == "일반":
+        return
+    profile = get_profile(industry_key)
+    templates = profile.get("strategy_templates", [])
+    keywords = profile.get("keywords", [])
+    title = doc.get("title", "")
+
+    matched_kw = [kw for kw in keywords if kw in title]
+    if not matched_kw or not templates:
+        return
+
+    _nc = _SEMANTIC_COLORS["neutral"]
+    st.html(f"""
+    <div style="background:{_nc['bg']};border:1px solid {_nc['border']};border-radius:10px;
+                padding:14px 16px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;color:{_nc['text']};margin-bottom:8px">
+        🎯 이 기사를 바탕으로 검토할 전략 질문
+      </div>
+    </div>
+    """)
+    for tmpl in templates[:2]:
+        question = tmpl.format(kw=matched_kw[0] if matched_kw else "")
+        st.markdown(f"- {question}")
+
+
 def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
     """정책 기사의 산업별 영향 해석 카드."""
     if industry_key == "일반":
@@ -728,10 +755,11 @@ def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
     if not matched:
         return
 
+    _wc = _SEMANTIC_COLORS["watch"]
     st.html(f"""
-    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;
+    <div style="background:{_wc['bg']};border:1px solid {_wc['border']};border-radius:10px;
                 padding:14px 16px;margin:8px 0">
-      <div style="font-size:11px;font-weight:700;color:#c2410c;margin-bottom:6px">
+      <div style="font-size:11px;font-weight:700;color:{_wc['text']};margin-bottom:6px">
         {profile['icon']} {profile['label']} 영향 분석
       </div>
       <div style="font-size:12px;color:#1e293b">
@@ -1595,6 +1623,8 @@ def _render_macro_overview_and_insights() -> None:
 def _render_signal_cards(industry_key: str) -> None:
     """Gauge 차트 대신 Signal → Impact → Risk → Action 카드 표시."""
     from core.signal_interpreter import interpret_all_signals
+    if not _MACRO:   # 5-A: 데이터 없는 경우 방어
+        return
     signals = interpret_all_signals(_MACRO, industry_key)
     if not signals:
         return
@@ -1613,11 +1643,18 @@ def _render_signal_cards(industry_key: str) -> None:
     cols = st.columns(len(top), gap="small")
 
     _COLOR = {"▲": "#dc2626", "▼": "#2563eb", "→": "#6b7280"}
+    _rc = _SEMANTIC_COLORS["risk"]
+    _oc = _SEMANTIC_COLORS["opportunity"]
+    _nc = _SEMANTIC_COLORS["neutral"]
 
     for sig, col in zip(top, cols):
         with col:
             tc = _COLOR.get(sig["trend"], "#6b7280")
-            risk_html = f'<div style="font-size:11px;color:#dc2626;margin-top:6px">⚠️ {sig["risk"]}</div>' if sig["risk"] and sig["risk"] != "—" else ""
+            risk_html = (
+                f'<div style="font-size:11px;color:{_rc["text"]};margin-top:6px;'
+                f'background:{_rc["bg"]};border:1px solid {_rc["border"]};'
+                f'border-radius:6px;padding:3px 7px">⚠️ {sig["risk"]}</div>'
+            ) if sig["risk"] and sig["risk"] != "—" else ""
             st.html(f"""
             <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;
                         padding:16px;margin-bottom:4px">
@@ -1625,162 +1662,15 @@ def _render_signal_cards(industry_key: str) -> None:
               <div style="font-size:24px;font-weight:800;color:#0f172a;margin:4px 0">
                 {sig['value']}<span style="font-size:14px;color:{tc};margin-left:4px">{sig['trend']}</span>
               </div>
-              <div style="font-size:12px;font-weight:600;color:#1e40af;margin:6px 0;
-                          padding:4px 8px;background:#eff6ff;border-radius:6px">
+              <div style="font-size:12px;font-weight:600;color:{_nc["text"]};margin:6px 0;
+                          padding:4px 8px;background:{_nc["bg"]};border-radius:6px">
                 📡 {sig['signal']}
               </div>
               <div style="font-size:11px;color:#334155;margin-top:4px">💼 {sig['impact']}</div>
               {risk_html}
-              <div style="font-size:11px;color:#16a34a;margin-top:6px">✅ {sig['action']}</div>
+              <div style="font-size:11px;color:{_oc["text"]};margin-top:6px">✅ {sig['action']}</div>
             </div>
             """)
-
-
-def _render_trend_charts() -> None:
-    """Plotly gauge+delta charts for key macro indicators.
-    Falls back to st.line_chart if plotly is not installed.
-    """
-    CHART_SPECS = [
-        # (macro_key, display_title, axis_range, threshold_steps, ref_value, unit_label)
-        (
-            "환율(원/$)", "USD/KRW 환율 (원)",
-            [1200, 1700],
-            [
-                {"range": [1200, 1380], "color": "#dcfce7"},   # 정상 (초록)
-                {"range": [1380, 1450], "color": "#fef9c3"},   # 주의 (노랑)
-                {"range": [1450, 1500], "color": "#ffedd5"},   # 경고 (주황)
-                {"range": [1500, 1700], "color": "#fee2e2"},   # 위험 (빨강)
-            ],
-            1380, "원/$",
-        ),
-        (
-            "소비자물가(CPI)", "소비자물가 CPI (%)",
-            [0, 6],
-            [
-                {"range": [0,   2.0], "color": "#dcfce7"},
-                {"range": [2.0, 3.0], "color": "#fef9c3"},
-                {"range": [3.0, 6.0], "color": "#fee2e2"},
-            ],
-            2.0, "%",
-        ),
-        (
-            "수출증가율", "수출증가율 (%)",
-            [-20, 30],
-            [
-                {"range": [-20, -10], "color": "#fee2e2"},
-                {"range": [-10,   0], "color": "#fef9c3"},
-                {"range": [  0,  15], "color": "#dcfce7"},
-                {"range": [ 15,  30], "color": "#fef9c3"},
-            ],
-            0, "%",
-        ),
-    ]
-
-    st.html("""
-    <div style="margin-top:4px;margin-bottom:8px">
-      <span style="font-size:11px;font-weight:700;color:#64748b;
-                   text-transform:uppercase;letter-spacing:1.5px">
-        📊 Macro Gauge Charts — 지표 현황
-      </span>
-    </div>
-    """)
-
-    chart_cols = st.columns(3, gap="medium")
-    _TREND_COLOR = {"▲": "#16a34a", "▼": "#dc2626", "→": "#64748b"}
-
-    try:
-        import plotly.graph_objects as go  # noqa: PLC0415
-        _has_plotly = True
-    except ImportError:
-        _has_plotly = False
-
-    for spec, col in zip(CHART_SPECS, chart_cols):
-        key, title, axis_range, steps, ref_value, unit_label = spec
-        data = _MACRO.get(key)
-        with col:
-            if not data:
-                st.info(f"{key} 데이터 없음")
-                continue
-            try:
-                cur  = float(str(data.get("value",      "0")).replace(",", "").replace("+", ""))
-                prev = float(str(data.get("prev_value", str(cur))).replace(",", "").replace("+", ""))
-            except (ValueError, TypeError):
-                st.info(f"{key} 값 파싱 오류")
-                continue
-
-            trend     = data.get("trend", "→")
-            as_of     = data.get("as_of", "")
-            delta     = cur - prev
-            tc        = _TREND_COLOR.get(trend, "#64748b")
-            delta_fmt = (f"+{delta:,.2f}" if abs(delta) < 100 else f"+{delta:,.0f}") if delta >= 0 \
-                        else (f"{delta:,.2f}" if abs(delta) < 100 else f"{delta:,.0f}")
-
-            if _has_plotly:
-                # ── Plotly gauge chart ──────────────────────────
-                fig = go.Figure(go.Indicator(
-                    mode="gauge+number+delta",
-                    value=cur,
-                    number={
-                        "suffix": f" {unit_label}",
-                        "font": {"size": 26, "color": "#0f172a", "family": "sans-serif"},
-                        "valueformat": ",.1f" if abs(cur) < 100 else ",.0f",
-                    },
-                    delta={
-                        "reference": prev,
-                        "increasing": {"color": "#dc2626" if key == "소비자물가(CPI)" else "#16a34a"},
-                        "decreasing": {"color": "#16a34a" if key == "소비자물가(CPI)" else "#dc2626"},
-                        "font": {"size": 13},
-                        "valueformat": "+,.2f" if abs(delta) < 100 else "+,.0f",
-                    },
-                    gauge={
-                        "axis": {
-                            "range": axis_range,
-                            "tickwidth": 1,
-                            "tickcolor": "#cbd5e1",
-                            "tickfont": {"size": 9, "color": "#94a3b8"},
-                        },
-                        "bar": {"color": tc, "thickness": 0.22},
-                        "bgcolor": "#f8fafc",
-                        "borderwidth": 0,
-                        "steps": steps,
-                        "threshold": {
-                            "line": {"color": "#64748b", "width": 2},
-                            "thickness": 0.75,
-                            "value": ref_value,
-                        },
-                    },
-                    title={
-                        "text": f"<b style='font-size:11px;color:#64748b'>{title}</b>",
-                        "font": {"size": 11, "color": "#64748b"},
-                        "align": "center",
-                    },
-                ))
-                fig.update_layout(
-                    height=230,
-                    margin={"t": 50, "b": 10, "l": 20, "r": 20},
-                    paper_bgcolor="#ffffff",
-                    plot_bgcolor="#ffffff",
-                    font={"family": "sans-serif"},
-                )
-                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-                st.caption(f"기준: {as_of}  |  이전: {prev:,.2f} {unit_label}" if abs(prev) < 100
-                           else f"기준: {as_of}  |  이전: {prev:,.0f} {unit_label}")
-            else:
-                # ── Fallback: st.line_chart ─────────────────────
-                st.html(f"""
-                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;
-                            padding:14px 16px 8px">
-                  <div style="font-size:10px;font-weight:700;color:#64748b;
-                              text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">{title}</div>
-                  <div style="font-size:24px;font-weight:900;color:#0f172a">
-                    {data.get('value','')}<span style="font-size:12px;color:#94a3b8"> {unit_label}</span>
-                    <span style="font-size:13px;font-weight:700;color:{tc};margin-left:8px">{trend} {delta_fmt}</span>
-                  </div>
-                </div>
-                """)
-                df = pd.DataFrame({title: [prev, cur]}, index=["이전", "현재"])
-                st.line_chart(df, height=100, use_container_width=True)
-                st.caption(f"기준: {as_of}")
 
 
 def _render_status_pulse_strip() -> None:
@@ -2189,6 +2079,10 @@ def render_ui() -> None:
                 # 임팩트 스코어 일괄 산출
                 _scored_filtered = score_articles(filtered, _cur_ind, _MACRO)
 
+                # 5-C: 빈 목록 방어
+                if not _scored_filtered:
+                    st.info("선택한 필터 조건에 맞는 기사가 없습니다.")
+
                 for d in _scored_filtered:
                     yyyymm   = d.get("issue_yyyymm", "")
                     date_tag = f"[{yyyymm[:4]}.{yyyymm[4:]}] " if len(yyyymm) == 6 else ""
@@ -2300,6 +2194,7 @@ def render_ui() -> None:
                         )
 
                     _render_policy_industry_impact(doc, _cur_ind)
+                    _render_article_strategy_questions(doc, _cur_ind)
                     _render_policy_detail(doc, detail)
                     _render_strategy_questions(doc, detail)
 
