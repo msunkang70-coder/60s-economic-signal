@@ -114,6 +114,20 @@ header[data-testid="stHeader"] { background: transparent !important; }
 </style>
 """)
 
+# ── 🔑 Groq API 키를 os.environ 에 주입 ───────────────────────────────────
+# @st.cache_data 안에서도 os.environ 은 안정적으로 접근 가능.
+# secrets.toml 이 아직 읽히지 않았을 때를 대비한 조기 주입.
+try:
+    if not os.environ.get("GROQ_API_KEY"):
+        _groq_secret = (st.secrets.get("groq") or {}).get("api_key", "").strip()
+        if _groq_secret:
+            os.environ["GROQ_API_KEY"] = _groq_secret
+            print(f"[app] ✅ GROQ_API_KEY 주입 완료 ({len(_groq_secret)}자)")
+        else:
+            print("[app] ⚠️  GROQ_API_KEY 없음 — 규칙 기반 폴백 사용")
+except Exception as _exc:
+    print(f"[app] GROQ_API_KEY 주입 오류: {_exc}")
+
 # ── 의미 기반 색상 상수 ─────────────────────────────────
 _SEMANTIC_COLORS = {
     "risk":        {"bg": "#fef2f2", "border": "#fca5a5", "text": "#dc2626"},   # 빨강
@@ -774,23 +788,43 @@ def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:
     _LABEL_BG = {"green": "#dcfce7", "yellow": "#fef3c7", "red": "#fee2e2"}
     _LABEL_FG = {"green": "#15803d", "yellow": "#92400e", "red": "#991b1b"}
 
+    # ── 질문별 연계 신호 사전 할당 (중복 없이) ────────────────────────
+    # 키워드 → 지표명 부분문자열 우선순위 매핑
+    _Q_TO_SIG = [
+        (["환율", "원화", "달러"],                 "환율"),
+        (["수출", "수요", "시장", "수주", "AI", "반도체", "무역"], "수출증가율"),
+        (["물가", "비용", "원가", "CPI", "인플레"],  "소비자물가"),
+        (["금리", "금융", "투자", "자금"],           "기준금리"),
+        (["규제", "통제", "제재"],                  "수출증가율"),  # 규제 → 수출 연계
+    ]
+
+    def _pick_signal(question: str, pool: list) -> dict | None:
+        """풀에서 질문에 가장 맞는 신호 하나 반환 (사용 후 풀에서 제거)."""
+        for q_kws, lbl_part in _Q_TO_SIG:
+            if any(kw in question for kw in q_kws):
+                for sig in pool:
+                    if lbl_part in sig["label"]:
+                        pool.remove(sig)
+                        return sig
+        # fallback: 풀의 첫 번째
+        return pool.pop(0) if pool else None
+
+    _sig_pool = list(_all_sigs)  # 복사본 (원본 보존)
+    _related_sigs = [_pick_signal(q, _sig_pool) for q in qs]
+    # 남은 슬롯은 남은 풀로 채움
+    for idx, rs in enumerate(_related_sigs):
+        if rs is None and _all_sigs:
+            _related_sigs[idx] = _all_sigs[min(idx, len(_all_sigs) - 1)]
+    # ─────────────────────────────────────────────────────────────────
+
     for i, q in enumerate(qs):
         items = generate_checklist(q, doc, _ind)
         checklist_html = "".join(
             f'<li style="margin-bottom:4px">☐ {item}</li>' for item in items
         )
 
-        # 질문과 관련된 거시 신호 찾기 (키워드 매칭)
-        related_sig = None
-        q_lower = q.lower()
-        for sig in _all_sigs[:4]:
-            if any(kw in q_lower for kw in ["환율", "금리", "물가", "수출", "수요", "규제"]):
-                label_kw = sig["label"].replace("(원/$)", "").replace("(CPI)", "")
-                if label_kw.rstrip() in q or sig["color"] != "yellow":
-                    related_sig = sig
-                    break
-        if not related_sig and _all_sigs:
-            related_sig = _all_sigs[0]
+        # 사전 할당된 연계 신호 사용 (루프 밖에서 중복 없이 배정됨)
+        related_sig = _related_sigs[i] if i < len(_related_sigs) else None
 
         color       = related_sig["color"] if related_sig else "yellow"
         emoji       = related_sig["emoji"] if related_sig else "🟡"
@@ -2748,7 +2782,59 @@ def render_ui() -> None:
             if st.button("📩 피드백 제출", use_container_width=True, key="btn_feedback"):
                 save_feedback(_sel_ind, _fb_use, _fb_text)
                 log_event("feedback_submit", {"industry": _sel_ind, "would_use": _fb_use})
-                st.success("감사합니다! 피드백이 저장되었습니다.")
+                st.session_state["feedback_done"] = True
+
+            if st.session_state.get("feedback_done"):
+                st.html("""
+                <div style="
+                    background: #FFFDE7;
+                    border: 2px solid #FFF59D;
+                    border-radius: 22px;
+                    padding: 28px 24px;
+                    margin: 12px 0;
+                    position: relative;
+                    box-shadow: 0 4px 24px rgba(255,235,59,0.18);
+                    overflow: hidden;
+                ">
+                  <!-- 모서리 꽃 (큰) -->
+                  <span style="position:absolute;top:10px;left:14px;font-size:22px;opacity:0.85;line-height:1">🌼</span>
+                  <span style="position:absolute;top:10px;right:14px;font-size:22px;opacity:0.85;line-height:1">🌼</span>
+                  <span style="position:absolute;bottom:10px;left:14px;font-size:20px;opacity:0.75;line-height:1">🌼</span>
+                  <span style="position:absolute;bottom:10px;right:14px;font-size:20px;opacity:0.75;line-height:1">🌼</span>
+                  <!-- 사이드 꽃 (중간) -->
+                  <span style="position:absolute;top:44%;left:6px;font-size:15px;opacity:0.55;line-height:1">🌼</span>
+                  <span style="position:absolute;top:44%;right:6px;font-size:15px;opacity:0.55;line-height:1">🌼</span>
+                  <!-- 상하 가운데 꽃 (작은) -->
+                  <span style="position:absolute;top:8px;left:50%;transform:translateX(-50%);font-size:13px;opacity:0.5;line-height:1">🌼</span>
+                  <span style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:13px;opacity:0.5;line-height:1">🌼</span>
+
+                  <!-- 내부 흰 카드 -->
+                  <div style="
+                      background: rgba(255,255,255,0.82);
+                      border-radius: 14px;
+                      padding: 22px 20px 20px;
+                      text-align: center;
+                      backdrop-filter: blur(4px);
+                  ">
+                    <div style="font-size:30px;margin-bottom:8px;line-height:1">💛</div>
+                    <div style="
+                        font-size:16px;
+                        font-weight:800;
+                        color:#795548;
+                        letter-spacing:0.5px;
+                        margin-bottom:6px;
+                    ">감사합니다!</div>
+                    <div style="
+                        font-size:12.5px;
+                        color:#8D6E63;
+                        line-height:1.8;
+                    ">
+                      소중한 피드백이 잘 저장되었습니다.<br>
+                      더 좋은 서비스를 만드는 데 큰 힘이 됩니다 🌻
+                    </div>
+                  </div>
+                </div>
+                """)
 
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
@@ -2975,7 +3061,35 @@ def render_ui() -> None:
                     with st.spinner("본문 수집 중..."):
                         print(f"[app] fetch_detail 요청: doc_id={doc['doc_id']} url={doc['url'][:70]}")
                         detail = fetch_detail(doc["doc_id"], doc["url"], doc["title"], industry_key=_cur_ind)
-                        print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,}")
+                        print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,} summary_source={detail.get('summary_source','?')}")
+
+                        # ── LLM 재요약: 캐시에 저장된 "rule" 결과를 Groq 로 업그레이드 ──
+                        # @st.cache_data 는 함수 반환값 전체를 캐시하므로,
+                        # 이전에 Groq 키 없이 수집한 기사는 summary_source="rule" 로 캐시돼 있음.
+                        # 지금 키가 있으면 본문만 꺼내서 LLM 재요약 (HTML 재수집 없이).
+                        if (
+                            detail.get("parse_status") == "success"
+                            and detail.get("summary_source") == "rule"
+                            and detail.get("body_text")
+                        ):
+                            try:
+                                from core.summarizer import _get_llm_key, summarize_3line as _re_summarize
+                                if _get_llm_key():
+                                    print("[app] 🔄 캐시된 rule 요약 → Groq 재요약 시도")
+                                    _new_sum, _new_src = _re_summarize(
+                                        detail["body_text"],
+                                        title=doc.get("title", ""),
+                                        industry_key=_cur_ind,
+                                    )
+                                    if _new_src == "groq":
+                                        detail = {
+                                            **detail,
+                                            "summary_3lines":  _new_sum,
+                                            "summary_source":  "groq",
+                                        }
+                                        print(f"[app] ✅ Groq 재요약 완료 ({len(_new_sum)}자)")
+                            except Exception as _re_err:
+                                print(f"[app] ⚠️  재요약 오류 (무시): {_re_err}")
 
                     st.session_state.last_doc    = doc
                     st.session_state.last_detail = detail

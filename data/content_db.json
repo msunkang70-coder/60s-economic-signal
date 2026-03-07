@@ -1,5 +1,14 @@
 [
   {
+    "content_id": "20260307",
+    "date": "2026-03-07",
+    "generated_at": "2026-03-07 16:33:06",
+    "topic": "경제",
+    "macro_data": "data/macro.json",
+    "script_path": "outputs/output_script.txt",
+    "srt_path": "outputs/output_script.srt"
+  },
+  {
     "content_id": "20260306",
     "date": "2026-03-06",
     "generated_at": "2026-03-06 14:59:17",
