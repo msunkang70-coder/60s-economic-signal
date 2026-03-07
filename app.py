@@ -2768,6 +2768,9 @@ def render_ui() -> None:
             if st.button("📩 피드백 제출", use_container_width=True, key="btn_feedback"):
                 save_feedback(_sel_ind, _fb_use, _fb_text)
                 log_event("feedback_submit", {"industry": _sel_ind, "would_use": _fb_use})
+                st.session_state["feedback_done"] = True
+
+            if st.session_state.get("feedback_done"):
                 st.html("""
                 <div style="
                     background: #FFFDE7;
