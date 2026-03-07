@@ -36,7 +36,7 @@ st.set_page_config(
     page_title="MSion | 60s 수출경제신호",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ── Global CSS: mobile responsiveness + Plotly chart spacing ──────────────
@@ -63,7 +63,7 @@ div[data-testid="stMarkdownContainer"] > div:hover {
 /* Hide Streamlit hamburger + footer */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
-header { visibility: hidden; }
+header[data-testid="stHeader"] { background: transparent !important; }
 </style>
 """)
 
@@ -79,24 +79,9 @@ def fetch_list(url: str, top_n: int) -> list[dict]:
 # 2. fetch_detail — Detail 단계 캐시 (TTL 30d)
 # ══════════════════════════════════════════════════════
 @st.cache_data(ttl=24 * 3600, show_spinner=False)   # TTL 1일 (Gemini 요약 갱신 주기)
-def fetch_detail(doc_id: str, url: str, title: str) -> dict:
-    return _fetch_detail(doc_id, url, title)
+def fetch_detail(doc_id: str, url: str, title: str, industry_key: str = "일반") -> dict:
+    return _fetch_detail(doc_id, url, title, industry_key=industry_key)
 
-
-# ══════════════════════════════════════════════════════
-# 3. build_summary — 3줄 요약 (v3: LLM 우선 / 규칙 기반 폴백)
-# ══════════════════════════════════════════════════════
-def build_summary(text: str, title: str = "", industry_key: str = "일반") -> str:
-    """
-    ANTHROPIC_API_KEY 환경변수가 있으면 Claude Haiku로 고품질 요약.
-    없으면 개선된 규칙 기반 3줄 요약으로 폴백.
-    항상 동일한 형식으로 반환:
-      ① [핵심 정책] ...
-      ② [주요 내용] ...
-      ③ [영향·시사점] ...
-    """
-    from core.summarizer import summarize_3line
-    return summarize_3line(text, title=title, industry_key=industry_key)
 
 
 # ══════════════════════════════════════════════════════
@@ -1935,11 +1920,6 @@ def render_ui() -> None:
                 f"**{_profile['label']}** 맞춤 브리핑 기능을 준비하고 있습니다.\n\n"
                 "아래 설문에 참여해 주시면 기능 개발에 큰 도움이 됩니다!"
             )
-            st.link_button(
-                "📋 상세 설문 참여하기 (Google Forms)",
-                url="https://forms.gle/PLACEHOLDER",
-                use_container_width=True,
-            )
             st.markdown("---")
             st.markdown("**간단 피드백**")
             _fb_use = st.radio(
@@ -2115,17 +2095,12 @@ def render_ui() -> None:
                     _stars = "⭐" * _impact
                     _label = f"📄 {date_tag}{_stars} {d['title'][:35]}{'...' if len(d['title']) > 35 else ''}"
 
-                    # 4~5점 기사 배경색 강조
-                    if _impact >= 4:
-                        st.markdown(
-                            f"<div style='background:#fef3c7;border-radius:8px;padding:4px 8px;"
-                            f"font-size:13px;margin-bottom:2px'>{_label}</div>",
-                            unsafe_allow_html=True,
-                        )
+                    btn_type = "primary" if _impact >= 4 else "secondary"
                     if st.button(
-                        _label if _impact < 4 else f"⬆️ {d['title'][:30]}...",
+                        _label,
                         key=f"doc_{d['doc_id']}",
                         use_container_width=True,
+                        type=btn_type,
                     ):
                         st.session_state.selected_id = d["doc_id"]
                         log_event("article_click", {"doc_id": d["doc_id"], "title": d["title"][:50]})
@@ -2156,7 +2131,7 @@ def render_ui() -> None:
                 if doc:
                     with st.spinner("본문 수집 중..."):
                         print(f"[app] fetch_detail 요청: doc_id={doc['doc_id']} url={doc['url'][:70]}")
-                        detail = fetch_detail(doc["doc_id"], doc["url"], doc["title"])
+                        detail = fetch_detail(doc["doc_id"], doc["url"], doc["title"], industry_key=_cur_ind)
                         print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,}")
 
                     st.session_state.last_doc    = doc
