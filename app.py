@@ -114,6 +114,20 @@ header[data-testid="stHeader"] { background: transparent !important; }
 </style>
 """)
 
+# ── 🔑 Groq API 키를 os.environ 에 주입 ───────────────────────────────────
+# @st.cache_data 안에서도 os.environ 은 안정적으로 접근 가능.
+# secrets.toml 이 아직 읽히지 않았을 때를 대비한 조기 주입.
+try:
+    if not os.environ.get("GROQ_API_KEY"):
+        _groq_secret = (st.secrets.get("groq") or {}).get("api_key", "").strip()
+        if _groq_secret:
+            os.environ["GROQ_API_KEY"] = _groq_secret
+            print(f"[app] ✅ GROQ_API_KEY 주입 완료 ({len(_groq_secret)}자)")
+        else:
+            print("[app] ⚠️  GROQ_API_KEY 없음 — 규칙 기반 폴백 사용")
+except Exception as _exc:
+    print(f"[app] GROQ_API_KEY 주입 오류: {_exc}")
+
 # ── 의미 기반 색상 상수 ─────────────────────────────────
 _SEMANTIC_COLORS = {
     "risk":        {"bg": "#fef2f2", "border": "#fca5a5", "text": "#dc2626"},   # 빨강
@@ -3047,7 +3061,35 @@ def render_ui() -> None:
                     with st.spinner("본문 수집 중..."):
                         print(f"[app] fetch_detail 요청: doc_id={doc['doc_id']} url={doc['url'][:70]}")
                         detail = fetch_detail(doc["doc_id"], doc["url"], doc["title"], industry_key=_cur_ind)
-                        print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,}")
+                        print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,} summary_source={detail.get('summary_source','?')}")
+
+                        # ── LLM 재요약: 캐시에 저장된 "rule" 결과를 Groq 로 업그레이드 ──
+                        # @st.cache_data 는 함수 반환값 전체를 캐시하므로,
+                        # 이전에 Groq 키 없이 수집한 기사는 summary_source="rule" 로 캐시돼 있음.
+                        # 지금 키가 있으면 본문만 꺼내서 LLM 재요약 (HTML 재수집 없이).
+                        if (
+                            detail.get("parse_status") == "success"
+                            and detail.get("summary_source") == "rule"
+                            and detail.get("body_text")
+                        ):
+                            try:
+                                from core.summarizer import _get_llm_key, summarize_3line as _re_summarize
+                                if _get_llm_key():
+                                    print("[app] 🔄 캐시된 rule 요약 → Groq 재요약 시도")
+                                    _new_sum, _new_src = _re_summarize(
+                                        detail["body_text"],
+                                        title=doc.get("title", ""),
+                                        industry_key=_cur_ind,
+                                    )
+                                    if _new_src == "groq":
+                                        detail = {
+                                            **detail,
+                                            "summary_3lines":  _new_sum,
+                                            "summary_source":  "groq",
+                                        }
+                                        print(f"[app] ✅ Groq 재요약 완료 ({len(_new_sum)}자)")
+                            except Exception as _re_err:
+                                print(f"[app] ⚠️  재요약 오류 (무시): {_re_err}")
 
                     st.session_state.last_doc    = doc
                     st.session_state.last_detail = detail
