@@ -460,7 +460,7 @@ def summarize_3line(
     """
     llm_result = _summarize_with_llm(text, title, industry_key=industry_key)
     if llm_result:
-        print(f"[summarizer] ✦ Groq 요약 성공 ({len(llm_result)}자)")
+        print(f"[summarizer] [OK] Groq 요약 성공 ({len(llm_result)}자)")
         return llm_result, "groq"
 
     print(f"[summarizer] 규칙 기반 폴백 (Groq 키: {'있음' if _get_llm_key() else '없음'})")

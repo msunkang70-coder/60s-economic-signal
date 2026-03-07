@@ -2188,7 +2188,7 @@ def render_ui() -> None:
 
                     with st.expander("📄 본문 전체", expanded=False):
                         st.text_area(
-                            "", value=detail["body_text"], height=300,
+                            "본문 전체", value=detail["body_text"], height=300,
                             disabled=True, label_visibility="collapsed",
                             key=f"body_{doc['doc_id']}",
                         )
