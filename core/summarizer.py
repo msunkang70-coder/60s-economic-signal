@@ -337,7 +337,7 @@ _LLM_PROMPT = """\
 - 줄임표(…) 사용 금지
 - 정책 분석 보고서 수준의 자연스러운 한국어 문장
 - ①②③ 기호와 [레이블]은 반드시 포함
-
+{industry_context}
 [기사 제목]
 {title}
 
@@ -377,7 +377,26 @@ def _validate_output(raw: str) -> str | None:
     return None
 
 
-def _summarize_with_llm(text: str, title: str = "") -> str | None:
+def _build_industry_context(industry_key: str) -> str:
+    """산업 키에 따른 LLM 프롬프트 컨텍스트 블록 생성."""
+    if not industry_key or industry_key == "일반":
+        return ""
+    try:
+        from core.industry_config import get_profile
+        profile = get_profile(industry_key)
+    except ImportError:
+        return ""
+    label = profile.get("label", industry_key)
+    crit_vars = ", ".join(profile.get("critical_variables", []))
+    return (
+        f"\n[산업 맞춤 분석 관점]\n"
+        f"- 분석 관점: {label} 수출기업 CEO를 위한 브리핑입니다\n"
+        f"- 중요 경제 변수: {crit_vars}\n"
+        f"- ③ 영향·시사점은 반드시 {label} 관점에서 작성하세요\n"
+    )
+
+
+def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반") -> str | None:
     """
     Groq (Llama 3.3 70B) API 호출로 3줄 요약 생성.
 
@@ -394,7 +413,8 @@ def _summarize_with_llm(text: str, title: str = "") -> str | None:
     if len(body_trunc) < 80:
         return None
 
-    prompt = _LLM_PROMPT.format(title=title or "", body=body_trunc)
+    industry_context = _build_industry_context(industry_key)
+    prompt = _LLM_PROMPT.format(title=title or "", body=body_trunc, industry_context=industry_context)
 
     try:
         resp = requests.post(
@@ -426,6 +446,7 @@ def _summarize_with_llm(text: str, title: str = "") -> str | None:
 def summarize_3line(
     text: str,
     title: str = "",
+    industry_key: str = "일반",
 ) -> tuple[str, str]:
     """
     정책 브리핑용 표준 3줄 요약 생성 (v3 공개 인터페이스).
@@ -437,13 +458,13 @@ def summarize_3line(
       1) GROQ_API_KEY 있으면 Llama 3.3 70B (무료)로 고품질 LLM 요약
       2) 키 없거나 호출 실패 시 규칙 기반 폴백
     """
-    llm_result = _summarize_with_llm(text, title)
+    llm_result = _summarize_with_llm(text, title, industry_key=industry_key)
     if llm_result:
         print(f"[summarizer] ✦ Groq 요약 성공 ({len(llm_result)}자)")
         return llm_result, "groq"
 
     print(f"[summarizer] 규칙 기반 폴백 (Groq 키: {'있음' if _get_llm_key() else '없음'})")
-    return summarize_rule_based(text, title, max_sentences=3), "rule"
+    return summarize_rule_based(text, title, max_sentences=3, industry_key=industry_key), "rule"
 
 
 # ──────────────────────────────────────────────────────
@@ -453,6 +474,7 @@ def summarize_rule_based(
     text: str,
     title: str = "",
     max_sentences: int = 3,
+    industry_key: str = "일반",
 ) -> str:
     """
     텍스트에서 중요 문장을 점수화하여 추출 요약을 반환한다.
@@ -464,6 +486,7 @@ def summarize_rule_based(
       - 숫자·단위 포함:   +2.0
       - 적정 문장 길이(30~100자): +1.0
       - 제목 단어 overlap: +1.5 (단어당)
+      - 산업 키워드 매칭: +2.5 (키워드당)
 
     ★ v3: 주제 일관성 필터 + 개선된 _structured_3line 사용.
     """
@@ -475,6 +498,15 @@ def summarize_rule_based(
 
     if not sentences:
         return text[:150]   # ★ MODIFIED v2: "..." 제거
+
+    # 산업 키워드 로드
+    _ind_kws: list[str] = []
+    if industry_key and industry_key != "일반":
+        try:
+            from core.industry_config import get_profile
+            _ind_kws = get_profile(industry_key).get("keywords", [])
+        except ImportError:
+            pass
 
     total = len(sentences)
     title_words = set(re.findall(r"[가-힣]{2,}", title)) if title else set()
@@ -502,6 +534,9 @@ def summarize_rule_based(
         if title_words:
             sent_words = set(re.findall(r"[가-힣]{2,}", sent))
             score += len(title_words & sent_words) * 1.5
+
+        # 6) 산업 키워드 가중치
+        score += sum(2.5 for kw in _ind_kws if kw in sent)
 
         scored.append((score, idx, sent))
 

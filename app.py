@@ -25,9 +25,15 @@ from core.fetcher import (
 )
 from core.ecos import refresh_macro as _ecos_refresh, _get_api_key as _ecos_get_key
 from core.content_manager import load_content_history as _load_history
+from core.industry_config import get_industry_list, get_profile
+from core.feedback_store import save_feedback
+from core.impact_scorer import score_article, score_articles
+from core.action_checklist import generate_checklist
+from core.analytics import log_event
+from core.today_signal import generate_today_signal
 
 st.set_page_config(
-    page_title="MSion | 60s Economic Signal",
+    page_title="MSion | 60s 수출경제신호",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -80,7 +86,7 @@ def fetch_detail(doc_id: str, url: str, title: str) -> dict:
 # ══════════════════════════════════════════════════════
 # 3. build_summary — 3줄 요약 (v3: LLM 우선 / 규칙 기반 폴백)
 # ══════════════════════════════════════════════════════
-def build_summary(text: str, title: str = "") -> str:
+def build_summary(text: str, title: str = "", industry_key: str = "일반") -> str:
     """
     ANTHROPIC_API_KEY 환경변수가 있으면 Claude Haiku로 고품질 요약.
     없으면 개선된 규칙 기반 3줄 요약으로 폴백.
@@ -90,7 +96,7 @@ def build_summary(text: str, title: str = "") -> str:
       ③ [영향·시사점] ...
     """
     from core.summarizer import summarize_3line
-    return summarize_3line(text, title=title)
+    return summarize_3line(text, title=title, industry_key=industry_key)
 
 
 # ══════════════════════════════════════════════════════
@@ -485,14 +491,17 @@ def _detect_industry_tag(text: str) -> str | None:  # ADD
     return None
 
 
-def build_strategy_questions(doc: dict, detail: dict | None = None) -> list:
-    """선택 문서 기반 3개 전략 질문 생성 — 정책성격·산업태그·제목 특정 키워드 반영.
+def build_strategy_questions(doc: dict, detail: dict | None = None, industry_key: str = "일반") -> list:
+    """선택 문서 기반 3개 전략 질문 생성 — 산업프로필·정책성격·산업태그·제목 키워드 반영.
 
-    키워드 추출 우선순위:
-      1. detail.keywords (fetch_detail이 추출한 본문 키워드, _STOP_WORDS 제외)
-      2. doc.title 분해 단어 (_STOP_WORDS 제외)
-      3. 위 둘 다 없으면 ptype 문자열 fallback
+    우선순위:
+      1. industry_config.strategy_templates (산업 프로필에 정의된 템플릿)
+      2. 기존 로직 (산업태그 > 정책성격 > default)
     """
+    # 산업 프로필 전략 템플릿이 있으면 우선 사용
+    profile = get_profile(industry_key)
+    ind_templates = profile.get("strategy_templates", [])
+
     title     = doc.get("title", "")
     full_text = title
 
@@ -500,16 +509,11 @@ def build_strategy_questions(doc: dict, detail: dict | None = None) -> list:
         full_text += " " + detail.get("summary_3lines", "")
         full_text += " " + " ".join(detail.get("keywords", []))
 
-    ptype    = _classify_policy_type(full_text)
-    industry = _detect_industry_tag(full_text)
-
     # ── 제목 특정 키워드 추출 (_STOP_WORDS 제외) ──────────────
     title_words = [
         w for w in re.findall(r"[가-힣]{2,}", title)
         if w not in _STOP_WORDS
     ]
-
-    # detail.keywords가 있으면 우선 사용 (본문 기반이므로 더 정확)
     if detail and detail.get("keywords"):
         detail_kws = [k for k in detail["keywords"] if k not in _STOP_WORDS]
         candidates = detail_kws + title_words
@@ -517,9 +521,14 @@ def build_strategy_questions(doc: dict, detail: dict | None = None) -> list:
         candidates = title_words
 
     c  = Counter(candidates)
+    ptype = _classify_policy_type(full_text)
     kw = next((w for w, _ in c.most_common(10) if len(w) >= 2), ptype)
 
-    # ── 우선순위: 산업태그 > 정책성격 > default ───────────────
+    if ind_templates:
+        return [t.format(kw=kw) for t in ind_templates[:3]]
+
+    # ── fallback: 산업태그 > 정책성격 > default ───────────────
+    industry = _detect_industry_tag(full_text)
     template_key = (
         industry if (industry and industry in _STRATEGY_TEMPLATES)
         else ptype if ptype in _STRATEGY_TEMPLATES
@@ -531,8 +540,8 @@ def build_strategy_questions(doc: dict, detail: dict | None = None) -> list:
 # ══════════════════════════════════════════════════════
 # UI 블록 렌더 함수
 # ══════════════════════════════════════════════════════
-def _filter_relevant_docs(docs: list) -> tuple[list, list]:
-    """관련성 높은 문서와 낮은 문서를 분리 반환."""
+def _filter_relevant_docs(docs: list, industry_key: str = "일반") -> tuple[list, list]:
+    """관련성 높은 문서와 낮은 문서를 분리 반환. 산업 키워드로 관련 기사 우선 정렬."""
     relevant, others = [], []
     for d in docs:
         title = d.get("title", "")
@@ -542,6 +551,16 @@ def _filter_relevant_docs(docs: list) -> tuple[list, list]:
             relevant.append(d)
         else:
             others.append(d)
+
+    # 산업 키워드로 관련도 정렬 (키워드 매칭 수 내림차순)
+    profile = get_profile(industry_key)
+    ind_kws = profile.get("keywords", [])
+    if ind_kws:
+        def _industry_score(doc):
+            title = doc.get("title", "")
+            return sum(1 for kw in ind_kws if kw in title)
+        relevant.sort(key=_industry_score, reverse=True)
+
     return relevant, others
 
 
@@ -691,12 +710,17 @@ def _render_policy_detail(doc: dict, detail: dict) -> None:
 
 
 def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:  # FIX: 시그니처 변경
-    qs = build_strategy_questions(doc, detail)  # FIX: 문서별 질문 생성
+    _ind = st.session_state.get("selected_industry", "일반")
+    qs = build_strategy_questions(doc, detail, industry_key=_ind)
     st.html("<br>")
     with st.container(border=True):
         st.markdown("**🤔 전략 질문**")
         for q in qs:
-            st.markdown(f"▸ {q}")
+            st.markdown(f"**▸ {q}**")
+            # 실행 체크리스트 추가
+            items = generate_checklist(q, doc, _ind)
+            for item in items:
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ 확인: {item}")
 
 
 
@@ -817,7 +841,7 @@ def generate_report_html(
         "danger":  "#ef4444",
     }
 
-    def _card_html(label: str, d: dict, large: bool = False) -> str:
+    def _card_html(label: str, d: dict, large: bool = False, is_key_indicator: bool = False) -> str:
         status, _, status_lbl = _get_threshold_status(label, str(d.get("value", "")))
         bar_color = _STATUS_COLOR_MAP.get(status, "#22c55e")
         val_size  = "28px" if large else "20px"
@@ -831,11 +855,17 @@ def generate_report_html(
             f'border-left:2px solid #3b82f6;padding:4px 8px;margin-top:8px;'
             f'border-radius:0 4px 4px 0;line-height:1.5">💡 {impact}</div>'
         ) if impact and large else ""
+        key_badge = (
+            '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;'
+            'border-radius:8px;font-size:9px;font-weight:700;margin-left:4px">'
+            '⭐핵심</span>'
+        ) if is_key_indicator else ""
         badge = (
+            f'{key_badge}'
             f'<span style="background:{bar_color};color:#fff;padding:1px 7px;'
             f'border-radius:8px;font-size:9px;font-weight:700;margin-left:6px">'
             f'{status_lbl}</span>'
-        ) if status_lbl else ""
+        ) if status_lbl else key_badge
         trend_icon = "↑" if d.get("trend") == "▲" else ("↓" if d.get("trend") == "▼" else "→")
         trend_color = "#16a34a" if d.get("trend") == "▲" else ("#dc2626" if d.get("trend") == "▼" else "#94a3b8")
         pad = "18px" if large else "12px"
@@ -855,8 +885,10 @@ def generate_report_html(
             f'</div>'
         )
 
-    primary_cards   = "".join(_card_html(l, _MACRO[l], large=True)  for l in _PRIMARY_LABELS   if l in _MACRO)
-    secondary_cards = "".join(_card_html(l, _MACRO[l], large=False) for l in _SECONDARY_LABELS if l in _MACRO)
+    _rpt_ind_key = st.session_state.get("selected_industry", "일반") if hasattr(st, "session_state") else "일반"
+    _rpt_mw = get_profile(_rpt_ind_key).get("macro_weights", {})
+    primary_cards   = "".join(_card_html(l, _MACRO[l], large=True,  is_key_indicator=_rpt_mw.get(l, 0) >= 1.5)  for l in _PRIMARY_LABELS   if l in _MACRO)
+    secondary_cards = "".join(_card_html(l, _MACRO[l], large=False, is_key_indicator=_rpt_mw.get(l, 0) >= 1.5) for l in _SECONDARY_LABELS if l in _MACRO)
 
     macro_section = f"""
 <div class="section">
@@ -875,8 +907,9 @@ def generate_report_html(
 </div>
 """
 
-    # ADD: 전략 질문 문서별 생성
-    qs = build_strategy_questions(sel_doc, detail) if sel_doc else [
+    # ADD: 전략 질문 문서별 생성 (산업 키 반영)
+    _rpt_ind = st.session_state.get("selected_industry", "일반") if hasattr(st, "session_state") else "일반"
+    qs = build_strategy_questions(sel_doc, detail, industry_key=_rpt_ind) if sel_doc else [
         "우리 산업에 미치는 2차·3차 파급 효과는?",
         "이 정책 기조가 6개월 이상 지속된다면 시장은 어떻게 재편되는가?",
         "대응 전략과 리스크 헷징 계획은 충분히 준비됐는가?",
@@ -924,7 +957,7 @@ def generate_report_html(
 <div class="page">
   <div class="header">
     {logo_tag}
-    <h1>60s Economic Signal — 정책 브리핑 리포트</h1>
+    <h1>60s 수출경제신호 — 정책 브리핑 리포트</h1>
     <div class="meta">
       작성일: <b>{today}</b> &nbsp;|&nbsp;
       데이터 기준: <b>{macro_date_disp}</b> &nbsp;|&nbsp;
@@ -971,7 +1004,8 @@ def export_data_json(
         records.append(rec)
 
     # ADD: questions + sort_order + macro 포함
-    questions = build_strategy_questions(sel_doc, detail) if sel_doc else []
+    _exp_ind = st.session_state.get("selected_industry", "일반") if hasattr(st, "session_state") else "일반"
+    questions = build_strategy_questions(sel_doc, detail, industry_key=_exp_ind) if sel_doc else []
     payload = {
         "exported_at":    _date.today().isoformat(),
         "source":         "KDI 경제정보센터 나라경제",
@@ -1258,10 +1292,10 @@ def _render_dashboard_header() -> None:
           </div>
           <h1 style="color:#ffffff;font-size:28px;font-weight:900;margin:0 0 6px;
                      letter-spacing:-0.5px;line-height:1.2">
-            60s Economic Signal
+            60s 수출경제신호
           </h1>
           <p style="color:#64748b;font-size:13px;margin:0">
-            Macro Snapshot &amp; Economic Insights &nbsp;|&nbsp; 수출 중소기업 경제 브리핑
+            AI 기반 산업 맞춤 수출 경제 브리핑
           </p>
         </div>
 
@@ -1348,12 +1382,21 @@ def _render_kpi_section() -> None:
                 val_float = 0.0
             impact = _auto_business_impact(label, val_float)
 
-            # ── Badge ──────────────────────────────────────────
+            # ── Badge (산업 핵심 지표 + 상태 배지) ──────────────
+            _kpi_ind = st.session_state.get("selected_industry", "일반")
+            _kpi_weights = get_profile(_kpi_ind).get("macro_weights", {})
+            _is_key = _kpi_weights.get(label, 0) >= 1.5
+            key_badge_html = (
+                '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;'
+                'border-radius:12px;font-size:10px;font-weight:700;margin-right:4px">'
+                '⭐핵심</span>'
+            ) if _is_key else ""
             badge_html = (
+                f'{key_badge_html}'
                 f'<span style="background:{bar_color};color:#fff;padding:2px 10px;'
                 f'border-radius:12px;font-size:10px;font-weight:800;letter-spacing:.3px">'
                 f'{status_lbl}</span>'
-                if status_lbl else ""
+                if status_lbl else key_badge_html
             )
             # ── Impact line ────────────────────────────────────
             impact_html = (
@@ -1751,10 +1794,20 @@ def _render_secondary_indicators() -> None:
                 val_float = 0.0
             impact = _auto_business_impact(label, val_float)
 
+            # 산업별 핵심 지표 배지
+            _sec_ind = st.session_state.get("selected_industry", "일반")
+            _sec_weights = get_profile(_sec_ind).get("macro_weights", {})
+            _sec_key = _sec_weights.get(label, 0) >= 1.5
+            _sec_key_badge = (
+                '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;'
+                'border-radius:8px;font-size:9px;font-weight:700;margin-left:6px">'
+                '⭐핵심</span>'
+            ) if _sec_key else ""
+
             st.html(f"""
             <div style="background:{bg_color};border:1px solid #e2e8f0;
                         border-radius:10px;padding:14px 16px;margin-bottom:4px">
-              <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">{label}</div>
+              <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">{label}{_sec_key_badge}</div>
               <div style="font-size:22px;font-weight:800;color:#0f172a;line-height:1.2">
                 {val_str}<span style="font-size:12px;color:#64748b;margin-left:2px">{unit}</span>
                 <span style="font-size:16px;color:{tc};margin-left:4px">{trend}</span>
@@ -1767,14 +1820,149 @@ def _render_secondary_indicators() -> None:
 
 
 # ══════════════════════════════════════════════════════
+# 4-A. 오늘의 핵심 신호 카드
+# ══════════════════════════════════════════════════════
+def _render_today_signal(industry_key: str) -> None:
+    """탭 위에 '오늘의 핵심 경제 신호' 카드 렌더링."""
+    signal = generate_today_signal(_MACRO, industry_key)
+    if not signal:
+        return
+
+    trend_color = "#dc2626" if signal["trend"] == "▲" else "#2563eb" if signal["trend"] == "▼" else "#6b7280"
+    checklist_html = "".join(
+        f'<div style="margin:4px 0;font-size:13px">📌 확인: {item}</div>'
+        for item in signal.get("checklist", [])
+    )
+
+    st.html(f"""
+    <div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);
+                border:2px solid #3b82f6;border-radius:16px;
+                padding:20px 24px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#3b82f6;margin-bottom:8px">
+        ⚡ 오늘의 핵심 경제 신호
+      </div>
+      <div style="font-size:22px;font-weight:800;color:#1e293b;margin-bottom:4px">
+        {signal['label']} {signal['value']} <span style="color:{trend_color}">{signal['trend']}</span>
+      </div>
+      <div style="font-size:14px;color:#334155;margin-bottom:12px">
+        {signal['impact']}
+      </div>
+      {checklist_html}
+    </div>
+    """)
+
+
+# ══════════════════════════════════════════════════════
+# 4-B. 산업별 핵심 변수 카드
+# ══════════════════════════════════════════════════════
+def _render_industry_variable_card(industry_key: str, docs: list) -> None:
+    """Tab 1 상단에 산업별 핵심 변수 카드 표시."""
+    if industry_key == "일반":
+        return
+
+    profile = get_profile(industry_key)
+    cv_list = profile["critical_variables"]
+
+    items_html = ""
+    for cv in cv_list:
+        # 거시지표와 매칭되는 변수는 현재값 표시
+        macro_match = _MACRO.get(cv)
+        if macro_match:
+            val = macro_match.get("value", "")
+            trend = macro_match.get("trend", "")
+            status, _, status_label = _get_threshold_status(cv, str(val))
+            status_badge = f' <span style="color:#dc2626;font-size:11px">⚠️{status_label}</span>' if status in ("warning", "danger", "caution") else ""
+            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → {val} {trend}{status_badge}</div>'
+        else:
+            # 기사 매칭 수 카운트
+            count = sum(1 for d in docs if cv.replace("(", "").replace(")", "") in d.get("title", ""))
+            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → 관련 기사 {count}건</div>'
+
+    st.html(f"""
+    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:12px;
+                padding:16px 20px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#16a34a;margin-bottom:8px">
+        {profile['icon']} {profile['label']} 핵심 변수
+      </div>
+      {items_html}
+    </div>
+    """)
+
+
+# ══════════════════════════════════════════════════════
 # 4. render_ui — 메인 UI (Infographic Dashboard)
 # ══════════════════════════════════════════════════════
 _KDI_URL = "https://eiec.kdi.re.kr/publish/naraList.do"
 
 
 def render_ui() -> None:
+    # ── 페이지 뷰 로깅 (세션당 1회) ──────────────────
+    if "page_view_logged" not in st.session_state:
+        log_event("page_view")
+        st.session_state["page_view_logged"] = True
+
+    # ── 사이드바: 산업 선택 + Fake Door ───────────────
+    _industry_list = get_industry_list()
+    with st.sidebar:
+        st.markdown("### 🏭 산업 선택")
+        _ind_options = [item["key"] for item in _industry_list]
+        _ind_labels  = {item["key"]: f'{get_profile(item["key"])["icon"]} {item["label"]}' for item in _industry_list}
+        _sel_ind = st.selectbox(
+            "산업을 선택하세요",
+            options=_ind_options,
+            index=_ind_options.index(st.session_state.get("selected_industry", "일반")),
+            format_func=lambda k: _ind_labels[k],
+            key="_industry_sb",
+        )
+        if st.session_state.get("selected_industry") != _sel_ind:
+            log_event("industry_select", {"industry": _sel_ind})
+        st.session_state["selected_industry"] = _sel_ind
+        _profile = get_profile(_sel_ind)
+
+        # 선택된 산업 정보 표시
+        st.markdown(f"**{_profile['icon']} {_profile['label']}**")
+        st.caption(_profile["description"])
+        if _profile["critical_variables"]:
+            st.markdown("**📌 핵심 경제 변수**")
+            for cv in _profile["critical_variables"]:
+                st.markdown(f"- {cv}")
+
+        # Fake Door 피드백 (일반 외 산업 선택 시)
+        if _sel_ind != "일반":
+            st.markdown("---")
+            st.markdown("### 🚀 산업 맞춤 브리핑 준비 중")
+            st.info(
+                f"**{_profile['label']}** 맞춤 브리핑 기능을 준비하고 있습니다.\n\n"
+                "아래 설문에 참여해 주시면 기능 개발에 큰 도움이 됩니다!"
+            )
+            st.link_button(
+                "📋 상세 설문 참여하기 (Google Forms)",
+                url="https://forms.gle/PLACEHOLDER",
+                use_container_width=True,
+            )
+            st.markdown("---")
+            st.markdown("**간단 피드백**")
+            _fb_use = st.radio(
+                "이 기능이 있다면 매일 사용하시겠습니까?",
+                options=["예", "아니오", "모르겠음"],
+                horizontal=True,
+                key="fb_would_use",
+            )
+            _fb_text = st.text_area(
+                "어떤 정보가 가장 필요한가요?",
+                placeholder="예: 반도체 수출 규제 현황, 환율 영향 분석 등",
+                key="fb_free_text",
+            )
+            if st.button("📩 피드백 제출", use_container_width=True, key="btn_feedback"):
+                save_feedback(_sel_ind, _fb_use, _fb_text)
+                log_event("feedback_submit", {"industry": _sel_ind, "would_use": _fb_use})
+                st.success("감사합니다! 피드백이 저장되었습니다.")
+
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
+
+    # ── ⚡ 오늘의 핵심 신호 (탭 바깥, Hero 아래) ──
+    _render_today_signal(_sel_ind)
 
     # ── ECOS 업데이트 버튼 ───────────────────────────
     _has_key = bool(_ecos_get_key())
@@ -1788,6 +1976,7 @@ def render_ui() -> None:
             with st.spinner("ECOS에서 데이터 수집 중..."):
                 try:
                     _ecos_refresh()
+                    log_event("macro_refresh")
                     st.toast("✅ 거시지표 갱신 완료!")
                 except Exception as _e:
                     st.error(f"갱신 실패: {_e}")
@@ -1798,6 +1987,7 @@ def render_ui() -> None:
 
     # ══ TAB 1: 경제신호 ══════════════════════════════
     with tab1:
+        _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
         st.html("""
         <div style="margin-bottom:8px;margin-top:4px">
           <span style="font-size:11px;font-weight:700;color:#64748b;
@@ -1821,6 +2011,8 @@ def render_ui() -> None:
         st.html("<div style='height:8px'></div>")
         _render_secondary_indicators()
 
+        # (실행 체크리스트는 _render_today_signal에서 탭 상단에 표시)
+
     # ══ TAB 2: 정책브리핑 ════════════════════════════
     with tab2:
         st.session_state.setdefault("docs", [])
@@ -1830,11 +2022,12 @@ def render_ui() -> None:
         st.session_state.setdefault("docs_fetched_at", "")
 
         # 앱 시작 시 docs가 비어있으면 자동 수집
+        _cur_ind = st.session_state.get("selected_industry", "일반")
         if not st.session_state.docs:
             with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
                 try:
                     _raw = fetch_list(_KDI_URL, 20)
-                    _rel, _oth = _filter_relevant_docs(_raw)
+                    _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
                     st.session_state.docs = _rel if _rel else _raw
                     st.session_state.docs_others = _oth if _rel else []
                     st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
@@ -1858,7 +2051,7 @@ def render_ui() -> None:
                     with st.spinner("목록 수집 중..."):
                         try:
                             _raw = fetch_list(_KDI_URL, int(top_n))
-                            _rel, _oth = _filter_relevant_docs(_raw)
+                            _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
                             st.session_state.docs = _rel if _rel else _raw
                             st.session_state.docs_others = _oth if _rel else []
                             st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
@@ -1912,16 +2105,30 @@ def render_ui() -> None:
 
                 st.divider()
 
-                for d in filtered:
+                # 임팩트 스코어 일괄 산출
+                _scored_filtered = score_articles(filtered, _cur_ind, _MACRO)
+
+                for d in _scored_filtered:
                     yyyymm   = d.get("issue_yyyymm", "")
                     date_tag = f"[{yyyymm[:4]}.{yyyymm[4:]}] " if len(yyyymm) == 6 else ""
-                    lbl = d["title"][:38] + ("..." if len(d["title"]) > 38 else "")
+                    _impact = d.get("impact_score", 1)
+                    _stars = "⭐" * _impact
+                    _label = f"📄 {date_tag}{_stars} {d['title'][:35]}{'...' if len(d['title']) > 35 else ''}"
+
+                    # 4~5점 기사 배경색 강조
+                    if _impact >= 4:
+                        st.markdown(
+                            f"<div style='background:#fef3c7;border-radius:8px;padding:4px 8px;"
+                            f"font-size:13px;margin-bottom:2px'>{_label}</div>",
+                            unsafe_allow_html=True,
+                        )
                     if st.button(
-                        f"📄 {date_tag}{lbl}",
+                        _label if _impact < 4 else f"⬆️ {d['title'][:30]}...",
                         key=f"doc_{d['doc_id']}",
                         use_container_width=True,
                     ):
                         st.session_state.selected_id = d["doc_id"]
+                        log_event("article_click", {"doc_id": d["doc_id"], "title": d["title"][:50]})
 
                 _render_policy_summary(filtered)
 
