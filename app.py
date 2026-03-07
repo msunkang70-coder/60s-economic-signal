@@ -31,6 +31,16 @@ from core.impact_scorer import score_article, score_articles
 from core.action_checklist import generate_checklist
 from core.analytics import log_event
 from core.today_signal import generate_today_signal
+from core.macro_signal_engine import detect_macro_signals, get_signal_summary
+from core.industry_mapper import map_industry_impact, get_industry_comparison
+from core.strategy_generator import generate_all_insights
+from core.impact_logic import (
+    calculate_impact_direction,
+    get_direction_en,
+    get_direction_emoji,
+    map_industry_sensitivity,
+)
+from core.ai_insight_generator import generate_ai_insight
 
 st.set_page_config(
     page_title="MSion | 60s 수출경제신호",
@@ -42,6 +52,43 @@ st.set_page_config(
 # ── Global CSS: mobile responsiveness + Plotly chart spacing ──────────────
 st.html("""
 <style>
+/* ── Research Plan Color Theme ───────────────────── */
+/* Page background — very light lavender */
+.stApp { background-color: #F4F4FF !important; }
+.stMain { background-color: #F4F4FF !important; }
+
+/* Sidebar — light lavender gradient */
+[data-testid="stSidebar"] > div:first-child {
+    background: linear-gradient(180deg, #EAEBFF 0%, #E0E1FF 100%) !important;
+}
+[data-testid="stSidebar"] { background-color: #EAEBFF !important; }
+
+/* Tab bar — pill style on lavender bg */
+[data-testid="stTabs"] [role="tablist"] {
+    background: #EAEBFF;
+    border-radius: 12px;
+    padding: 4px;
+    gap: 4px;
+}
+[data-testid="stTabs"] [role="tab"] {
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    color: #5B5FEE !important;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    background: #5B5FEE !important;
+    color: white !important;
+}
+
+/* Dividers — lavender tint */
+hr { border-color: #C8C9FF !important; opacity: 0.6; }
+
+/* Expander headers */
+[data-testid="stExpander"] summary {
+    background: #EAEBFF !important;
+    border-radius: 8px !important;
+}
+
 /* Remove default Streamlit top padding */
 .block-container { padding-top: 1.5rem !important; }
 
@@ -702,19 +749,162 @@ def _render_policy_detail(doc: dict, detail: dict) -> None:
         st.markdown(f"🟢 기회:&nbsp;&nbsp; {opp}")
 
 
-def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:  # FIX: 시그니처 변경
+def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:
+    """5-파트 전략 질문 카드 형식으로 렌더링."""
+    from core.strategy_generator import generate_strategic_insight
     _ind = st.session_state.get("selected_industry", "일반")
     qs = build_strategy_questions(doc, detail, industry_key=_ind)
-    st.html("<br>")
-    with st.container(border=True):
-        st.markdown("**🤔 전략 질문**")
-        for q in qs:
-            st.markdown(f"**▸ {q}**")
-            # 실행 체크리스트 추가
-            items = generate_checklist(q, doc, _ind)
-            for item in items:
-                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ 확인: {item}")
 
+    # 현재 매크로 신호에서 가장 관련성 높은 신호 선택 (카드 맥락용)
+    if _MACRO:
+        try:
+            _all_sigs = detect_macro_signals(_MACRO, _ind)
+        except Exception:
+            _all_sigs = []
+    else:
+        _all_sigs = []
+
+    _sig_map = {s["label"]: s for s in _all_sigs}
+
+    st.html("<br>")
+    st.markdown("### 🎯 전략적 질문 & 시사점")
+
+    _CARD_BG  = {"green": "#f0fdf4", "yellow": "#fffbeb", "red": "#fef2f2"}
+    _CARD_BOR = {"green": "#16a34a", "yellow": "#d97706", "red": "#dc2626"}
+    _LABEL_BG = {"green": "#dcfce7", "yellow": "#fef3c7", "red": "#fee2e2"}
+    _LABEL_FG = {"green": "#15803d", "yellow": "#92400e", "red": "#991b1b"}
+
+    for i, q in enumerate(qs):
+        items = generate_checklist(q, doc, _ind)
+        checklist_html = "".join(
+            f'<li style="margin-bottom:4px">☐ {item}</li>' for item in items
+        )
+
+        # 질문과 관련된 거시 신호 찾기 (키워드 매칭)
+        related_sig = None
+        q_lower = q.lower()
+        for sig in _all_sigs[:4]:
+            if any(kw in q_lower for kw in ["환율", "금리", "물가", "수출", "수요", "규제"]):
+                label_kw = sig["label"].replace("(원/$)", "").replace("(CPI)", "")
+                if label_kw.rstrip() in q or sig["color"] != "yellow":
+                    related_sig = sig
+                    break
+        if not related_sig and _all_sigs:
+            related_sig = _all_sigs[0]
+
+        color       = related_sig["color"] if related_sig else "yellow"
+        emoji       = related_sig["emoji"] if related_sig else "🟡"
+        color_label = related_sig["color_label"] if related_sig else "주의"
+        sig_text    = related_sig["signal"] if related_sig else ""
+        impact_text = related_sig["impact"] if related_sig else ""
+
+        bg     = _CARD_BG[color]
+        border = _CARD_BOR[color]
+        lbg    = _LABEL_BG[color]
+        lfg    = _LABEL_FG[color]
+
+        st.html(f"""
+        <div style="background:{bg};border:1px solid {border};border-left:5px solid {border};
+                    border-radius:10px;padding:18px 20px;margin-bottom:14px">
+
+          <!-- 헤더: 번호 + 색상 배지 -->
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <span style="background:{border};color:#fff;width:22px;height:22px;
+                         border-radius:50%;display:flex;align-items:center;
+                         justify-content:center;font-size:11px;font-weight:800;
+                         flex-shrink:0">{i+1}</span>
+            <span style="background:{lbg};color:{lfg};padding:2px 10px;
+                         border-radius:12px;font-size:11px;font-weight:700">
+              {emoji} {color_label}
+            </span>
+          </div>
+
+          <!-- 전략 질문 -->
+          <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:12px;
+                      line-height:1.5">
+            🤔 {q}
+          </div>
+
+          <!-- 거시 연계 신호 -->
+          {"" if not sig_text else f'''
+          <div style="background:rgba(255,255,255,0.7);border-radius:6px;padding:8px 12px;
+                      margin-bottom:8px;font-size:12px;color:#475569">
+            <span style="font-weight:600;color:{border}">📊 연계 거시 신호</span>&nbsp;
+            {sig_text}
+          </div>'''}
+
+          <!-- 예상 산업 영향 -->
+          {"" if not impact_text else f'''
+          <div style="background:rgba(255,255,255,0.7);border-radius:6px;padding:8px 12px;
+                      margin-bottom:8px;font-size:12px;color:#475569">
+            <span style="font-weight:600;color:{border}">🏭 예상 산업 영향</span>&nbsp;
+            {impact_text}
+          </div>'''}
+
+          <!-- 실행 체크리스트 -->
+          <div style="background:rgba(255,255,255,0.8);border-radius:6px;
+                      padding:8px 12px;font-size:12px;color:#374151">
+            <div style="font-weight:700;color:{border};margin-bottom:6px">✅ 실행 체크리스트</div>
+            <ul style="margin:0;padding-left:16px;line-height:1.8">
+              {checklist_html}
+            </ul>
+          </div>
+
+        </div>
+        """)
+
+
+def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
+    """기사 관련 산업 전략 질문 표시."""
+    if industry_key == "일반":
+        return
+    profile = get_profile(industry_key)
+    templates = profile.get("strategy_templates", [])
+    keywords = profile.get("keywords", [])
+    title = doc.get("title", "")
+
+    matched_kw = [kw for kw in keywords if kw in title]
+    if not matched_kw or not templates:
+        return
+
+    _nc = _SEMANTIC_COLORS["neutral"]
+    st.html(f"""
+    <div style="background:{_nc['bg']};border:1px solid {_nc['border']};border-radius:10px;
+                padding:14px 16px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;color:{_nc['text']};margin-bottom:8px">
+        🎯 이 기사를 바탕으로 검토할 전략 질문
+      </div>
+    </div>
+    """)
+    for tmpl in templates[:2]:
+        question = tmpl.format(kw=matched_kw[0] if matched_kw else "")
+        st.markdown(f"- {question}")
+
+
+def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
+    """정책 기사의 산업별 영향 해석 카드."""
+    if industry_key == "일반":
+        return
+    profile = get_profile(industry_key)
+    title = doc.get("title", "")
+
+    keywords = profile.get("keywords", [])
+    matched = [kw for kw in keywords if kw in title]
+    if not matched:
+        return
+
+    _wc = _SEMANTIC_COLORS["watch"]
+    st.html(f"""
+    <div style="background:{_wc['bg']};border:1px solid {_wc['border']};border-radius:10px;
+                padding:14px 16px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;color:{_wc['text']};margin-bottom:6px">
+        {profile['icon']} {profile['label']} 영향 분석
+      </div>
+      <div style="font-size:12px;color:#1e293b">
+        이 정책은 <b>{', '.join(matched[:3])}</b> 관련 내용으로, {profile['label']} 산업에 직접 영향이 예상됩니다.
+      </div>
+    </div>
+    """)
 
 def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
     """기사 관련 산업 전략 질문 표시."""
@@ -1294,83 +1484,161 @@ def _render_dashboard_header() -> None:
     except Exception:
         pass
 
-    # ── 로고 HTML ──────────────────────────────────────
+    # ── 로고 HTML (70px width) ────────────────────────
     logo_src = _load_logo_b64()
     if logo_src:
         logo_html = (
             f'<img src="{logo_src}" alt="MSion" '
-            f'style="height:38px;width:auto;object-fit:contain;'
-            f'filter:drop-shadow(0 0 8px rgba(96,165,250,0.4));'
-            f'margin-bottom:14px;display:block">'
+            f'style="width:70px;height:auto;object-fit:contain;display:block;'
+            f'filter:drop-shadow(0 2px 12px rgba(200,245,208,0.5))">'
         )
     else:
-        # 폴백: 텍스트 로고
+        # 폴백: 텍스트 로고 (큰 사이즈)
         logo_html = (
-            '<div style="font-size:22px;font-weight:900;color:#ffffff;'
-            'letter-spacing:-0.5px;margin-bottom:14px">'
-            'M<span style="color:#60a5fa">S</span>'
-            '<span style="font-weight:400;color:#cbd5e1">ion</span>'
+            '<div style="width:70px;height:70px;background:rgba(255,255,255,0.15);'
+            'border-radius:16px;border:2px solid rgba(255,255,255,0.3);'
+            'display:flex;align-items:center;justify-content:center;'
+            'font-size:26px;font-weight:900;color:#ffffff;letter-spacing:-1px">'
+            'M<span style="color:#C8F5D0">S</span>'
             '</div>'
         )
 
     # ── 태그 칩 ───────────────────────────────────────
     tags_html = "".join(
-        f'<span style="background:rgba(96,165,250,0.15);color:#93c5fd;'
+        f'<span style="background:rgba(200,245,208,0.2);color:#C8F5D0;'
         f'padding:3px 12px;border-radius:20px;font-size:11px;font-weight:600;'
-        f'border:1px solid rgba(96,165,250,0.3);margin-right:6px">{t}</span>'
+        f'border:1px solid rgba(200,245,208,0.4);margin-right:6px">{t}</span>'
         for t in ["환율", "물가", "수출", "금리", "무역"]
     )
 
     st.html(f"""
     <div style="
-        background:linear-gradient(135deg,#071123 0%,#0f2240 50%,#071123 100%);
-        border-radius:16px;padding:30px 40px 24px;margin-bottom:20px;
-        border:1px solid rgba(96,165,250,0.12);
-        box-shadow:0 4px 32px rgba(0,0,0,0.4);
+        background:linear-gradient(135deg,#5B5FEE 0%,#3D40C4 50%,#5B5FEE 100%);
+        border-radius:16px;padding:28px 36px 22px;margin-bottom:20px;
+        border:1px solid rgba(255,255,255,0.2);
+        box-shadow:0 4px 24px rgba(91,95,238,0.35);
     ">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
 
-        <!-- 좌: 로고 + 앱명 -->
-        <div>
-          {logo_html}
-          <div style="color:#60a5fa;font-size:10px;font-weight:700;
-                      letter-spacing:3px;text-transform:uppercase;margin-bottom:6px">
-            LIVE ECONOMIC DASHBOARD
+        <!-- 좌: [로고] + [제목] 수평 배치 -->
+        <div style="display:flex;align-items:center;gap:20px">
+
+          <!-- 로고 (70px) -->
+          <div style="flex-shrink:0">
+            {logo_html}
           </div>
-          <h1 style="color:#ffffff;font-size:28px;font-weight:900;margin:0 0 6px;
-                     letter-spacing:-0.5px;line-height:1.2">
-            60s 수출경제신호
-          </h1>
-          <p style="color:#64748b;font-size:13px;margin:0">
-            AI 기반 산업 맞춤 수출 경제 브리핑
-          </p>
+
+          <!-- 제목 + 부제목 -->
+          <div>
+            <div style="color:#C8F5D0;font-size:9px;font-weight:700;
+                        letter-spacing:3px;text-transform:uppercase;margin-bottom:5px">
+              MACRO SIGNAL INTELLIGENCE
+            </div>
+            <h1 style="color:#B8FAC8;font-size:30px;font-weight:900;margin:0 0 4px;
+                       letter-spacing:-0.5px;line-height:1.15">
+              60s 수출경제신호
+            </h1>
+            <p style="color:rgba(255,255,255,0.8);font-size:13px;margin:0;font-weight:500">
+              AI Macro Intelligence Dashboard
+            </p>
+          </div>
         </div>
 
-        <!-- 우: 업데이트 시각 + 데이터 출처 -->
+        <!-- 우: 업데이트 시각 + 배지들 -->
         <div style="text-align:right;flex-shrink:0;padding-top:4px">
-          <div style="color:#334155;font-size:9px;font-weight:700;
+          <div style="color:rgba(255,255,255,0.5);font-size:9px;font-weight:700;
                       text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">
             LAST UPDATED
           </div>
-          <div style="color:#e2e8f0;font-size:15px;font-weight:800;
-                      font-variant-numeric:tabular-nums">
+          <div style="color:#ffffff;font-size:16px;font-weight:800;
+                      font-variant-numeric:tabular-nums;letter-spacing:-0.5px">
             {refreshed_at if refreshed_at else "—"}
           </div>
-          <div style="color:#334155;font-size:10px;margin-top:4px">KST · 한국은행 ECOS</div>
-          <div style="margin-top:14px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
-            <span style="background:rgba(34,197,94,0.15);color:#4ade80;padding:2px 10px;
+          <div style="color:rgba(255,255,255,0.5);font-size:10px;margin-top:3px">
+            KST · 한국은행 ECOS
+          </div>
+          <div style="margin-top:12px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+            <span style="background:rgba(200,245,208,0.2);color:#C8F5D0;padding:2px 10px;
                          border-radius:20px;font-size:10px;font-weight:700;
-                         border:1px solid rgba(34,197,94,0.25)">● LIVE</span>
-            <span style="background:rgba(96,165,250,0.12);color:#93c5fd;padding:2px 10px;
+                         border:1px solid rgba(200,245,208,0.4)">● LIVE</span>
+            <span style="background:rgba(255,255,255,0.15);color:#ffffff;padding:2px 10px;
                          border-radius:20px;font-size:10px;font-weight:600;
-                         border:1px solid rgba(96,165,250,0.2)">ECOS API</span>
+                         border:1px solid rgba(255,255,255,0.25)">ECOS API</span>
             {_llm_badge_html()}
           </div>
         </div>
 
       </div>
-      <div style="margin-top:18px;border-top:1px solid rgba(96,165,250,0.1);
-                  padding-top:16px">{tags_html}</div>
+      <!-- 하단 태그 칩 바 -->
+      <div style="margin-top:18px;border-top:1px solid rgba(255,255,255,0.15);
+                  padding-top:14px">{tags_html}</div>
+    </div>
+    """)
+
+
+def _render_industry_focus(industry_key: str) -> None:
+    """Tab 1 상단 — 현재 선택된 산업 컨텍스트 배너 (item 2).
+
+    Example output:
+      Industry Focus
+      🔬 반도체·디스플레이
+    """
+    profile    = get_profile(industry_key)
+    icon       = profile.get("icon", "📦")
+    label      = profile.get("label", industry_key)
+    desc       = profile.get("description", "")
+    sensitivity = map_industry_sensitivity(industry_key)
+
+    # 민감도 상위 2개 차원 태그
+    _DIM_KO = {
+        "fx":            "환율 민감",
+        "export_growth": "수출 민감",
+        "inflation":     "물가 민감",
+        "interest_rate": "금리 민감",
+    }
+    _SENS_COLOR = {"high": "#dc2626", "medium": "#d97706", "low": "#16a34a"}
+    _SENS_BG    = {"high": "#fef2f2", "medium": "#fffbeb", "low": "#f0fdf4"}
+
+    sens_tags = "".join(
+        f'<span style="background:{_SENS_BG.get(v,"#f1f5f9")};'
+        f'color:{_SENS_COLOR.get(v,"#64748b")};padding:2px 10px;'
+        f'border-radius:20px;font-size:10px;font-weight:700;margin-right:6px;'
+        f'border:1px solid {_SENS_COLOR.get(v,"#94a3b8")}33">'
+        f'{_DIM_KO.get(k,"")}</span>'
+        for k, v in list(sensitivity.items())[:4]
+        if k in _DIM_KO
+    )
+
+    st.html(f"""
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                background:linear-gradient(135deg,#EAEBFF 0%,#E0E1FF 100%);
+                border:1px solid #C8C9FF;border-left:5px solid #5B5FEE;
+                border-radius:12px;padding:14px 20px;margin-bottom:16px">
+
+      <!-- 좌: Industry Focus + 산업명 -->
+      <div style="display:flex;align-items:center;gap:16px">
+        <div>
+          <div style="font-size:9px;font-weight:700;color:#5B5FEE;
+                      text-transform:uppercase;letter-spacing:2px;margin-bottom:4px">
+            Industry Focus
+          </div>
+          <div style="font-size:18px;font-weight:900;color:#1E1B4B;line-height:1.2">
+            {icon} {label}
+          </div>
+          <div style="font-size:11px;color:#4B4F9A;margin-top:3px">{desc}</div>
+        </div>
+      </div>
+
+      <!-- 우: 민감도 태그들 -->
+      <div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">
+        <div style="font-size:9px;color:#8B8FCF;font-weight:600;
+                    text-transform:uppercase;letter-spacing:1px;
+                    margin-bottom:4px;width:100%;text-align:right">
+          Macro Sensitivity
+        </div>
+        {sens_tags}
+      </div>
+
     </div>
     """)
 
@@ -1721,65 +1989,631 @@ def _render_status_pulse_strip() -> None:
 
 
 def _render_secondary_indicators() -> None:
-    """Compact row for non-primary indicators (엔화, 수출물가, 수입물가)."""
+    """Compact row for non-primary indicators (엔화, 수출물가, 수입물가) — softer, dimmer style."""
     SECONDARY = ["원/100엔 환율", "수출물가지수", "수입물가지수"]
     items = [(k, _MACRO[k]) for k in SECONDARY if k in _MACRO]
     if not items:
         return
 
-    st.markdown("---")
     st.html("""
-    <span style="font-size:11px;font-weight:700;color:#64748b;
-                 text-transform:uppercase;letter-spacing:1.5px">
-    📊 보조 지표 — 무역 심층 분석
-    </span>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;margin-top:4px">
+      <span style="background:#8B8FCF;color:white;min-width:26px;height:26px;
+                   border-radius:50%;display:inline-flex;align-items:center;
+                   justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">5</span>
+      <span style="font-size:13px;font-weight:700;color:#4B4F9A">보조 지표</span>
+      <span style="font-size:10px;color:#8B8FCF;font-weight:500;
+                   background:#F4F4FF;padding:2px 10px;border-radius:20px;
+                   border:1px solid #D4D5FF">
+        Supporting Indicators
+      </span>
+    </div>
     """)
 
-    _TREND_COLOR = {"▲": "#22c55e", "▼": "#ef4444", "→": "#94a3b8"}
+    _TREND_COLOR = {"▲": "#16a34a", "▼": "#dc2626", "→": "#94a3b8"}
     cols = st.columns(len(items), gap="small")
     for (label, data), col in zip(items, cols):
         with col:
             trend   = data.get("trend", "→")
             val_str = _fmt_value(label, data.get("value", ""))
             unit    = data.get("unit", "")
-            note    = data.get("note", "")
             as_of   = data.get("as_of", "")
+            source_name = data.get("source_name", "한국은행 ECOS")
             tc      = _TREND_COLOR.get(trend, "#94a3b8")
-            status, bg_color, status_lbl = _get_threshold_status(label, val_str)
-            try:
-                val_float = float(val_str.replace(",", "").replace("+", ""))
-            except (ValueError, TypeError):
-                val_float = 0.0
-            _sec_ind = st.session_state.get("selected_industry", "일반")
-            try:
-                from core.signal_interpreter import interpret_signal as _interp_sig
-                _interp = _interp_sig(label, val_float, trend, _sec_ind)
-                impact = f'{_interp["signal"]} — {_interp["impact"]}'
-            except Exception:
-                impact = ""
+            _TI     = {"▲": "↑", "▼": "↓", "→": "→"}
+            ti      = _TI.get(trend, "→")
 
-            # 산업별 핵심 지표 배지
-            _sec_weights = get_profile(_sec_ind).get("macro_weights", {})
-            _sec_key = _sec_weights.get(label, 0) >= 1.5
-            _sec_key_badge = (
-                '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;'
-                'border-radius:8px;font-size:9px;font-weight:700;margin-left:6px">'
-                '⭐핵심</span>'
-            ) if _sec_key else ""
+            # Short label map
+            _SHORT_SEC = {
+                "원/100엔 환율":  "JPY/KRW",
+                "수출물가지수":   "Export Price",
+                "수입물가지수":   "Import Price",
+            }
+            short_label = _SHORT_SEC.get(label, label)
 
             st.html(f"""
-            <div style="background:{bg_color};border:1px solid #e2e8f0;
-                        border-radius:10px;padding:14px 16px;margin-bottom:4px">
-              <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">{label}{_sec_key_badge}</div>
-              <div style="font-size:22px;font-weight:800;color:#0f172a;line-height:1.2">
-                {val_str}<span style="font-size:12px;color:#64748b;margin-left:2px">{unit}</span>
-                <span style="font-size:16px;color:{tc};margin-left:4px">{trend}</span>
+            <div style="background:#F8F8FF;border:1px dashed #C8C9FF;
+                        border-radius:12px;padding:14px 16px;
+                        opacity:0.92">
+              <!-- Number (smaller than primary) -->
+              <div style="display:flex;align-items:baseline;gap:5px;margin-bottom:3px">
+                <span style="font-size:1.6rem;font-weight:800;color:#4B4F9A;
+                             line-height:1;letter-spacing:-1px">{val_str}</span>
+                <span style="font-size:1rem;font-weight:700;color:{tc}">{ti}</span>
               </div>
-              <div style="font-size:11px;color:#64748b;margin-top:8px">{note}</div>
-              {"<div style='font-size:11px;color:#1e40af;margin-top:6px;padding:4px 8px;background:#eff6ff;border-radius:4px'>💡 " + impact + "</div>" if impact else ""}
-              <div style="font-size:10px;color:#94a3b8;margin-top:6px">기준일: {as_of}</div>
+              <!-- Label -->
+              <div style="font-size:10px;font-weight:700;color:#8B8FCF;
+                          text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px">
+                {short_label}
+                <span style="font-size:9px;color:#A0A3C0;font-weight:400;margin-left:4px">{unit}</span>
+              </div>
+              <!-- Source -->
+              <div style="font-size:9px;color:#A0A3C0;padding-top:6px;
+                          border-top:1px solid #E8E8F8">
+                {source_name} · {as_of}
+              </div>
             </div>
             """)
+
+
+# ══════════════════════════════════════════════════════
+# NEW: AI Strategy Assistant 렌더링 함수들
+# ══════════════════════════════════════════════════════
+
+def _render_daily_signal_summary(macro_data: dict, industry_key: str) -> None:
+    """Tab 1 최상단 — 🟢🟡🔴 오늘의 거시경제 신호 + 3줄 브리핑."""
+    if not macro_data:
+        return
+    try:
+        signals = detect_macro_signals(macro_data, industry_key)
+        summary = get_signal_summary(signals)
+    except Exception:
+        return
+
+    profile = get_profile(industry_key)
+    ind_label = profile.get("label", industry_key)
+
+    # 신호 행 HTML — 라벤더 베이스 + 색상 왼쪽 테두리
+    def _sig_row(color: str, emoji: str, label_txt: str, impact_txt: str) -> str:
+        _BORDER = {"green": "#16a34a", "yellow": "#d97706", "red": "#dc2626"}
+        _FG     = {"green": "#15803d", "yellow": "#92400e", "red": "#991b1b"}
+        border  = _BORDER.get(color, "#94a3b8")
+        fg      = _FG.get(color, "#475569")
+        return (
+            f'<div style="display:flex;align-items:flex-start;gap:10px;'
+            f'background:#EAEBFF;border-radius:8px;padding:10px 14px;margin-bottom:8px;'
+            f'border-left:4px solid {border}">'
+            f'<span style="font-size:18px;flex-shrink:0">{emoji}</span>'
+            f'<div><span style="font-weight:700;color:{fg};font-size:13px">'
+            f'{label_txt}</span>'
+            f'<span style="color:#4B4F9A;font-size:12px"> — {impact_txt}</span></div>'
+            f'</div>'
+        )
+
+    rows_html = ""
+    for sig in (summary["green"][:1] + summary["yellow"][:1] + summary["red"][:1]):
+        rows_html += _sig_row(
+            sig["color"], sig["emoji"],
+            sig["signal"],
+            sig["impact"],
+        )
+    if not rows_html:
+        for sig in signals[:3]:
+            rows_html += _sig_row(sig["color"], sig["emoji"], sig["signal"], sig["impact"])
+
+    # 3줄 브리핑 — 민트그린 번호 + 라벤더 배경
+    lines = summary["executive_lines"]
+    brief_html = "".join(
+        f'<div style="display:flex;gap:10px;align-items:flex-start;'
+        f'padding:7px 0;border-bottom:1px solid #D4D5FF;font-size:13px;color:#1E1B4B;line-height:1.6">'
+        f'<span style="background:#C8F5D0;color:#166534;border-radius:50%;'
+        f'min-width:20px;height:20px;display:inline-flex;align-items:center;'
+        f'justify-content:center;font-size:10px;font-weight:800;flex-shrink:0">'
+        f'{i+1}</span>'
+        f'<span>{line.lstrip("①②③ ")}</span></div>'
+        for i, line in enumerate(lines)
+    )
+
+    st.html(f"""
+    <div style="background:#ffffff;border:1px solid #D4D5FF;border-radius:14px;
+                border-top:4px solid #5B5FEE;
+                padding:20px 24px;margin-bottom:20px;
+                box-shadow:0 2px 12px rgba(91,95,238,0.1)">
+
+      <!-- 섹션 번호 + 제목 -->
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="background:#5B5FEE;color:white;min-width:26px;height:26px;
+                       border-radius:50%;display:inline-flex;align-items:center;
+                       justify-content:center;font-size:12px;font-weight:800">1</span>
+          <span style="font-size:14px;font-weight:800;color:#1E1B4B">
+            오늘의 거시경제 신호
+          </span>
+        </div>
+        <span style="background:#EAEBFF;color:#5B5FEE;padding:3px 12px;
+                     border-radius:20px;font-size:11px;font-weight:700">
+          {ind_label}
+        </span>
+      </div>
+
+      {rows_html}
+
+      <div style="margin-top:16px;padding-top:14px;border-top:2px solid #EAEBFF">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="background:#C8F5D0;color:#166534;padding:2px 10px;
+                       border-radius:20px;font-size:10px;font-weight:700">
+            📋 오늘의 3줄 브리핑
+          </span>
+        </div>
+        {brief_html}
+      </div>
+    </div>
+    """)
+
+
+def _render_industry_impact_summary(signals: list, industry_key: str) -> None:
+    """산업별 영향 요약 — 상위 3개 신호를 3열 카드로 표시."""
+    if not signals:
+        return
+    try:
+        cards = map_industry_impact(signals, top_n=3)
+    except Exception:
+        return
+    if not cards:
+        return
+
+    _BG     = {"green": "#EAEBFF", "yellow": "#EAEBFF", "red": "#EAEBFF"}
+    _BORDER = {"green": "#16a34a", "yellow": "#d97706", "red": "#dc2626"}
+    _FG     = {"green": "#15803d", "yellow": "#92400e", "red": "#991b1b"}
+
+    st.html("""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <span style="background:#5B5FEE;color:white;min-width:26px;height:26px;
+                   border-radius:50%;display:inline-flex;align-items:center;
+                   justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">2</span>
+      <span style="font-size:14px;font-weight:800;color:#1E1B4B">
+        산업별 영향 요약
+      </span>
+      <span style="font-size:11px;color:#5B5FEE;font-weight:600;
+                   background:#EAEBFF;padding:2px 10px;border-radius:20px">
+        Industry Impact
+      </span>
+    </div>
+    """)
+
+    cols = st.columns(len(cards), gap="small")
+    for card, col in zip(cards, cols):
+        color  = card["color"]
+        border = _BORDER.get(color, "#94a3b8")
+        bg     = _BG.get(color, "#f8fafc")
+        fg     = _FG.get(color, "#475569")
+        with col:
+            st.html(f"""
+            <div style="background:{bg};border:1px solid #D4D5FF;
+                        border-top:4px solid {border};border-radius:10px;
+                        padding:16px;height:100%;min-height:160px;
+                        box-shadow:0 2px 8px rgba(91,95,238,0.08)">
+              <div style="font-size:12px;font-weight:700;color:{fg};margin-bottom:8px">
+                {card['emoji']} {card['macro_signal']}
+              </div>
+              <div style="font-size:12px;color:#1E1B4B;font-weight:600;
+                          margin-bottom:6px;line-height:1.5">
+                {card['interpretation']}
+              </div>
+              <div style="font-size:11px;color:#4B4F9A;margin-bottom:6px;
+                          line-height:1.5">
+                💼 {card['industry_impact']}
+              </div>
+              {"" if not card['risk'] or card['risk'] == '—' else
+               f'<div style="font-size:11px;color:#dc2626;line-height:1.4">'
+               f'⚠️ {card["risk"]}</div>'}
+              <div style="font-size:9px;color:#8B8FCF;margin-top:8px;
+                          border-top:1px solid #D4D5FF;padding-top:6px">
+                {card['source_name']}
+                {"&nbsp;|&nbsp;" + card['as_of'] if card['as_of'] else ""}
+              </div>
+            </div>
+            """)
+
+
+def _render_strategic_insights(macro_data: dict, industry_key: str) -> None:
+    """
+    전략적 시사점 카드 — 새 포맷 (item 7/12 spec):
+      ① Short Strategy Question
+      ② Connected Macro Signal
+      ③ Industry Impact (1 sentence)
+      ④ Action Checklist
+    """
+    if not macro_data:
+        return
+    try:
+        insights = generate_all_insights(macro_data, industry_key, top_n=3)
+    except Exception:
+        return
+    if not insights:
+        return
+
+    _BORDER = {"green": "#16a34a", "yellow": "#d97706", "red": "#dc2626"}
+    _BADGE  = {"green": "#C8F5D0", "yellow": "#fef3c7", "red": "#fee2e2"}
+    _FG     = {"green": "#166534", "yellow": "#92400e", "red": "#991b1b"}
+
+    # Question templates by signal keyword
+    _QUESTION_MAP = {
+        "환율":     "이 환율 변동, 우리 업체는 어떻게 대응해야 할까요?",
+        "수출":     "수출 동향 변화에 어떤 전략으로 대응해야 할까요?",
+        "물가":     "물가 압력 속에서 어떤 원가 관리 전략이 필요할까요?",
+        "CPI":      "인플레이션 흐름, 사업에 어떤 영향을 줄까요?",
+        "금리":     "금리 변화에 따른 자금 조달 전략은?",
+        "수입물가": "수입 원가 상승, 어떻게 대비해야 할까요?",
+        "수출물가": "수출 단가 변화, 채산성 점검이 필요한가요?",
+    }
+
+    st.html("""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <span style="background:#5B5FEE;color:white;min-width:26px;height:26px;
+                   border-radius:50%;display:inline-flex;align-items:center;
+                   justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">3</span>
+      <span style="font-size:14px;font-weight:800;color:#1E1B4B">전략적 시사점</span>
+      <span style="font-size:11px;color:#5B5FEE;font-weight:600;
+                   background:#EAEBFF;padding:2px 10px;border-radius:20px">
+        Strategic Insights
+      </span>
+    </div>
+    """)
+
+    for ins in insights:
+        color  = ins.get("color", "yellow")
+        emoji  = ins.get("emoji", "🟡")
+        clabel = ins.get("color_label", "주의")
+        label  = ins.get("label", "")
+        border = _BORDER.get(color, "#94a3b8")
+        bbg    = _BADGE.get(color, "#fef3c7")
+        bfg    = _FG.get(color, "#92400e")
+
+        # ① Strategy Question — pick template by keyword
+        question = next(
+            (q for kw, q in _QUESTION_MAP.items() if kw in label),
+            f"{label} 신호, 지금 어떻게 대응해야 할까요?",
+        )
+
+        # ② Macro Signal pill
+        macro_signal = ins.get("macro_signal", label)
+
+        # ③ Industry Impact — 1 sentence
+        impact_txt = ins.get("industry_impact", ins.get("interpretation", ""))
+
+        # ④ Action Checklist
+        checklist_html = "".join(
+            f'<div style="display:flex;gap:8px;align-items:flex-start;'
+            f'padding:5px 0;font-size:12px;color:#374151;'
+            f'border-bottom:1px solid {border}22">'
+            f'<span style="color:{border};font-size:14px;flex-shrink:0;line-height:1.4">☐</span>'
+            f'<span style="line-height:1.5">{item}</span></div>'
+            for item in ins.get("action_checklist", [])
+        )
+
+        with st.expander(
+            f"{emoji} {question}",
+            expanded=False,
+        ):
+            st.html(f"""
+            <div style="border:1px solid {border}44;border-radius:12px;
+                        overflow:hidden;background:white">
+
+              <!-- ② Connected Macro Signal -->
+              <div style="padding:10px 16px;background:{bbg};
+                          border-bottom:2px solid {border}33;
+                          display:flex;align-items:center;gap:10px">
+                <span style="font-size:18px">{emoji}</span>
+                <div>
+                  <div style="font-size:9px;font-weight:700;color:{bfg};
+                              text-transform:uppercase;letter-spacing:.8px">
+                    Connected Signal
+                  </div>
+                  <div style="font-size:13px;font-weight:800;color:{bfg}">
+                    {macro_signal}
+                  </div>
+                </div>
+                <span style="margin-left:auto;background:white;color:{bfg};
+                             padding:2px 10px;border-radius:20px;font-size:10px;
+                             font-weight:700;border:1px solid {border}44">
+                  {clabel}
+                </span>
+              </div>
+
+              <!-- ③ Industry Impact (1 sentence) -->
+              <div style="padding:12px 16px;border-bottom:1px solid #f1f5f9">
+                <div style="font-size:9px;font-weight:700;color:#8B8FCF;
+                            text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px">
+                  🏭 Industry Impact
+                </div>
+                <div style="font-size:13px;color:#1E1B4B;line-height:1.6">
+                  {impact_txt}
+                </div>
+              </div>
+
+              <!-- ④ Action Checklist -->
+              <div style="padding:12px 16px;background:#F8F8FF">
+                <div style="font-size:9px;font-weight:700;color:#5B5FEE;
+                            text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">
+                  ✅ Action Checklist
+                </div>
+                {checklist_html}
+              </div>
+
+            </div>
+            """)
+
+
+def _render_industry_focus(industry_key: str) -> None:
+    """
+    Tab 1 상단 — 선택된 산업 + 거시경제 민감도 태그 배너.
+    map_industry_sensitivity()로 고/중/저 민감도를 색상 배지로 표시.
+    """
+    profile = get_profile(industry_key)
+    ind_label = profile.get("label", industry_key)
+    ind_icon  = profile.get("icon", "📦")
+    ind_desc  = profile.get("description", "")
+
+    try:
+        sens = map_industry_sensitivity(industry_key)
+    except Exception:
+        sens = {}
+
+    # Build sensitivity tags
+    _SENS_LABELS = {
+        "fx":            "환율",
+        "export_growth": "수출",
+        "inflation":     "물가",
+        "interest_rate": "금리",
+    }
+    _SENS_COLORS = {
+        "high":   ("background:#fee2e2;color:#991b1b;border:1px solid #fca5a5", "높음"),
+        "medium": ("background:#fef3c7;color:#92400e;border:1px solid #fcd34d", "중간"),
+        "low":    ("background:#f0fdf4;color:#166534;border:1px solid #86efac", "낮음"),
+    }
+    tags_html = ""
+    for dim, dim_label in _SENS_LABELS.items():
+        level = sens.get(dim, "medium")
+        style, level_ko = _SENS_COLORS.get(level, _SENS_COLORS["medium"])
+        tags_html += (
+            f'<span style="{style};padding:3px 10px;border-radius:20px;'
+            f'font-size:10px;font-weight:700;white-space:nowrap">'
+            f'{dim_label} 민감도 {level_ko}</span>'
+        )
+
+    desc_html = (
+        f'<span style="font-size:11px;color:#4B4F9A;opacity:0.8">{ind_desc}</span>'
+        if ind_desc else ""
+    )
+
+    st.html(f"""
+    <div style="background:linear-gradient(135deg,#EAEBFF 0%,#F4F4FF 100%);
+                border:1px solid #D4D5FF;border-left:5px solid #5B5FEE;
+                border-radius:12px;padding:14px 20px;margin-bottom:4px;
+                display:flex;align-items:center;justify-content:space-between;
+                flex-wrap:wrap;gap:12px">
+      <!-- Left: industry name -->
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:28px;line-height:1">{ind_icon}</span>
+        <div>
+          <div style="font-size:9px;font-weight:700;color:#8B8FCF;
+                      text-transform:uppercase;letter-spacing:1.2px;margin-bottom:2px">
+            Industry Focus
+          </div>
+          <div style="font-size:16px;font-weight:900;color:#1E1B4B;line-height:1.2">
+            {ind_label}
+          </div>
+          {desc_html}
+        </div>
+      </div>
+      <!-- Right: sensitivity tags -->
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        <span style="font-size:9px;font-weight:600;color:#8B8FCF;
+                     text-transform:uppercase;letter-spacing:0.8px;margin-right:2px">
+          Macro Sensitivity
+        </span>
+        {tags_html}
+      </div>
+    </div>
+    """)
+
+
+def _render_kpi_section_v2(industry_key: str) -> None:
+    """
+    Primary KPI 카드 v2 — 새 계층 구조 (item 3 spec):
+      1. Large Number + trend arrow
+      2. Indicator Name (uppercase)
+      3. Signal Badge  (🟢 Opportunity / 🟡 Caution / 🔴 Risk)
+      4. Short Insight (1 sentence, AI-generated or rule-based)
+      5. Source: ... | Updated: ...
+    """
+    if not _MACRO:
+        st.info("거시지표 데이터 없음 — ECOS API 키 설정 후 업데이트 버튼을 클릭하세요.")
+        return
+
+    # ── Primary indicators only (item 6) ──────────────────────────
+    PRIMARY = ["환율(원/$)", "소비자물가(CPI)", "수출증가율", "기준금리"]
+    items = [(k, _MACRO[k]) for k in PRIMARY if k in _MACRO]
+    if not items:
+        return
+
+    # Design tokens
+    _BORDER  = {"green": "#16a34a", "yellow": "#d97706", "red": "#dc2626"}
+    _BADGE   = {"green": "#C8F5D0", "yellow": "#fef3c7", "red": "#fee2e2"}
+    _BADGE_FG= {"green": "#166534", "yellow": "#92400e", "red": "#991b1b"}
+    _TC      = {"▲": "#16a34a",    "▼": "#dc2626",      "→": "#94a3b8"}
+    _TI      = {"▲": "↑",          "▼": "↓",             "→": "→"}
+
+    try:
+        _signals = detect_macro_signals(_MACRO, industry_key)
+        _sig_map = {s["label"]: s for s in _signals}
+    except Exception:
+        _sig_map = {}
+
+    cols = st.columns(len(items), gap="small")
+    for (label, data), col in zip(items, cols):
+        with col:
+            trend       = data.get("trend", "→")
+            unit        = data.get("unit", "")
+            val_str     = _fmt_value(label, data.get("value", ""))
+            as_of       = data.get("as_of", "")
+            source_name = data.get("source_name", "한국은행 ECOS")
+
+            sig         = _sig_map.get(label, {})
+            color       = sig.get("color", "yellow")
+
+            # ── Signal type: Opportunity / Caution / Risk ──────────
+            direction   = calculate_impact_direction(label, trend, industry_key, color)
+            dir_en      = get_direction_en(direction)     # "Opportunity" | "Caution" | "Risk"
+            dir_emoji   = get_direction_emoji(direction)  # 🟢 🟡 🔴
+
+            # ── AI or rule-based short insight (1 sentence) ────────
+            ai_insight  = generate_ai_insight(
+                label, trend, industry_key, direction, use_llm=False
+            )
+            # Truncate to 1 sentence
+            ai_insight  = ai_insight.split(".")[0] + "." if "." in ai_insight else ai_insight
+
+            border = _BORDER.get(color, "#94a3b8")
+            bbg    = _BADGE.get(color, "#EAEBFF")
+            bfg    = _BADGE_FG.get(color, "#4B4F9A")
+            tc     = _TC.get(trend, "#94a3b8")
+            ti     = _TI.get(trend, "→")
+
+            # Core indicator badge
+            _weights = get_profile(industry_key).get("macro_weights", {})
+            is_key = _weights.get(label, 0) >= 1.5
+            core_badge = (
+                '<span style="background:#5B5FEE;color:white;padding:1px 8px;'
+                'border-radius:10px;font-size:9px;font-weight:700">CORE</span>'
+            ) if is_key else ""
+
+            # Short label for display
+            _SHORT = {
+                "환율(원/$)":      "USD/KRW",
+                "소비자물가(CPI)": "CPI",
+                "수출증가율":      "Export Growth",
+                "기준금리":        "Interest Rate",
+            }
+            short_label = _SHORT.get(label, label)
+
+            st.html(f"""
+            <div style="background:#EAEBFF;border:1px solid #D4D5FF;
+                        border-top:5px solid {border};border-radius:14px;
+                        padding:20px 18px 16px;
+                        box-shadow:0 2px 12px rgba(91,95,238,0.1);
+                        display:flex;flex-direction:column;gap:0">
+
+              <!-- 1. LARGE NUMBER + Trend -->
+              <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px">
+                <span style="font-size:2.8rem;font-weight:900;color:#1E1B4B;
+                             line-height:1;letter-spacing:-2px">{val_str}</span>
+                <span style="font-size:1.5rem;font-weight:800;color:{tc};
+                             line-height:1">{ti}</span>
+              </div>
+
+              <!-- 2. Indicator Name + unit -->
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <span style="font-size:11px;font-weight:800;color:#4B4F9A;
+                             text-transform:uppercase;letter-spacing:1px">{short_label}</span>
+                <span style="font-size:10px;color:#8B8FCF">{unit}</span>
+                {core_badge}
+              </div>
+
+              <!-- 3. Signal Badge -->
+              <div style="margin-bottom:10px">
+                <span style="background:{bbg};color:{bfg};padding:3px 12px;
+                             border-radius:20px;font-size:11px;font-weight:700;
+                             border:1px solid {border}22">
+                  {dir_emoji} {dir_en}
+                </span>
+              </div>
+
+              <!-- 4. Short Insight (1 sentence) -->
+              <div style="font-size:12px;color:#1E1B4B;line-height:1.5;
+                          flex:1;margin-bottom:10px">
+                {ai_insight}
+              </div>
+
+              <!-- 5. Source + Date -->
+              <div style="font-size:10px;color:#8B8FCF;padding-top:8px;
+                          border-top:1px solid #D4D5FF">
+                Source: {source_name}<br>
+                Updated: {as_of}
+              </div>
+            </div>
+            """)
+
+
+def _render_industry_comparison(macro_data: dict) -> None:
+    """전 산업 거시경제 영향 비교표 — expander 안에 표시."""
+    if not macro_data:
+        return
+    try:
+        rows = get_industry_comparison(macro_data)
+    except Exception:
+        return
+    if not rows:
+        return
+
+    _COLOR_CELL = {
+        "green":  ("🟢", "#f0fdf4", "#15803d"),
+        "yellow": ("🟡", "#fffbeb", "#92400e"),
+        "red":    ("🔴", "#fef2f2", "#991b1b"),
+    }
+
+    with st.expander("🔍 전 산업 거시경제 영향 비교", expanded=False):
+        st.html("""
+        <div style="font-size:11px;color:#64748b;margin-bottom:8px">
+          환율/금리/수요 차원에서 각 산업별 현재 거시경제 영향을 요약합니다.
+        </div>
+        """)
+
+        header_html = """
+        <tr style="background:#EAEBFF">
+          <th style="text-align:left;padding:10px 14px;font-size:11px;
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">산업</th>
+          <th style="text-align:center;padding:10px 14px;font-size:11px;
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">환율 영향</th>
+          <th style="text-align:center;padding:10px 14px;font-size:11px;
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">금리 영향</th>
+          <th style="text-align:center;padding:10px 14px;font-size:11px;
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">수요 동향</th>
+        </tr>
+        """
+        rows_html = ""
+        for i, row in enumerate(rows):
+            bg = "#ffffff" if i % 2 == 0 else "#fafafa"
+
+            def _cell(color_key: str, text: str) -> str:
+                em, cbg, cfg = _COLOR_CELL.get(color_key, ("🟡", "#fffbeb", "#92400e"))
+                return (
+                    f'<td style="text-align:center;padding:8px 12px">'
+                    f'<span style="background:{cbg};color:{cfg};padding:2px 10px;'
+                    f'border-radius:12px;font-size:11px;font-weight:700">'
+                    f'{em} {text}</span></td>'
+                )
+
+            rows_html += (
+                f'<tr style="background:{bg};border-bottom:1px solid #f1f5f9">'
+                f'<td style="padding:8px 12px;font-size:12px;font-weight:600;color:#1e293b">'
+                f'{row["icon"]} {row["label"]}</td>'
+                + _cell(row["fx_color"],     row["fx_impact"])
+                + _cell(row["rate_color"],   row["rate_impact"])
+                + _cell(row["demand_color"], row["demand_trend"])
+                + "</tr>"
+            )
+
+        st.html(f"""
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;
+                        border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+            <thead>{header_html}</thead>
+            <tbody>{rows_html}</tbody>
+          </table>
+        </div>
+        """)
 
 
 # ══════════════════════════════════════════════════════
@@ -1919,9 +2753,6 @@ def render_ui() -> None:
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
 
-    # ── ⚡ 오늘의 핵심 신호 (탭 바깥, Hero 아래) ──
-    _render_today_signal(_sel_ind)
-
     # ── ECOS 업데이트 버튼 ───────────────────────────
     _has_key = bool(_ecos_get_key())
     _, col_btn = st.columns([7, 1])
@@ -1945,23 +2776,42 @@ def render_ui() -> None:
 
     # ══ TAB 1: 경제신호 ══════════════════════════════
     with tab1:
-        # 1. 산업별 핵심 변수 카드
-        _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
+        # 신호 사전 계산 (여러 렌더링 함수에서 공유)
+        try:
+            _signals = detect_macro_signals(_MACRO, _sel_ind) if _MACRO else []
+        except Exception:
+            _signals = []
 
-        # 2. Signal Cards — 산업별 해석
-        _render_signal_cards(_sel_ind)
-        st.html("<div style='height:16px'></div>")
+        # 0. 산업 포커스 배너 (선택 산업 + 민감도 태그)
+        _render_industry_focus(_sel_ind)
+        st.divider()
 
-        # 3. KPI 카드
+        # 1. 오늘의 거시경제 신호 + 3줄 브리핑
+        _render_daily_signal_summary(_MACRO, _sel_ind)
+        st.divider()
+
+        # 2. 산업별 영향 요약 (3열 카드)
+        _render_industry_impact_summary(_signals, _sel_ind)
+        st.divider()
+
+        # 3. 전략적 시사점 (expander × 3)
+        _render_strategic_insights(_MACRO, _sel_ind)
+        st.divider()
+
+        # 4. 핵심 거시경제 지표 KPI (v2 — 큰 숫자 + 색상 테두리 + 출처)
         st.html("""
-        <div style="margin-bottom:8px;margin-top:4px">
-          <span style="font-size:11px;font-weight:700;color:#64748b;
-                       text-transform:uppercase;letter-spacing:1.5px">
-            ⚡ 핵심 지표 — Key Economic Indicators
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;margin-top:4px">
+          <span style="background:#5B5FEE;color:white;min-width:26px;height:26px;
+                       border-radius:50%;display:inline-flex;align-items:center;
+                       justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">4</span>
+          <span style="font-size:14px;font-weight:800;color:#1E1B4B">핵심 지표</span>
+          <span style="font-size:11px;color:#5B5FEE;font-weight:600;
+                       background:#EAEBFF;padding:2px 10px;border-radius:20px">
+            Key Economic Indicators
           </span>
         </div>
         """)
-        _render_kpi_section()
+        _render_kpi_section_v2(_sel_ind)
 
         if _MACRO:
             for label, data in _MACRO.items():
@@ -1969,15 +2819,13 @@ def render_ui() -> None:
                 if warn:
                     st.warning(warn)
 
-        # 4. Key Insights
-        st.html("<div style='height:16px'></div>")
-        _render_macro_overview_and_insights()
-        st.html("<div style='height:8px'></div>")
-
-        # 5. 보조 지표
+        # 5. 보조 지표 (엔화 / 수출물가 / 수입물가)
         _render_secondary_indicators()
 
-        # 6. 데이터 출처
+        # 6. 전 산업 거시경제 영향 비교표
+        _render_industry_comparison(_MACRO)
+
+        # 7. 데이터 출처 footer
         st.html("""
         <div style="font-size:10px;color:#94a3b8;text-align:center;margin-top:16px;padding:8px">
           📊 데이터 출처: 한국은행 ECOS API | 업데이트: 월 1회 | 기사: KDI 나라경제
