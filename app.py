@@ -67,6 +67,14 @@ header[data-testid="stHeader"] { background: transparent !important; }
 </style>
 """)
 
+# ── 의미 기반 색상 상수 ─────────────────────────────────
+_SEMANTIC_COLORS = {
+    "risk":        {"bg": "#fef2f2", "border": "#fca5a5", "text": "#dc2626"},   # 빨강
+    "opportunity": {"bg": "#f0fdf4", "border": "#86efac", "text": "#16a34a"},   # 초록
+    "watch":       {"bg": "#fefce8", "border": "#fde047", "text": "#ca8a04"},   # 노랑
+    "neutral":     {"bg": "#eff6ff", "border": "#93c5fd", "text": "#2563eb"},   # 파랑
+}
+
 # ══════════════════════════════════════════════════════
 # 1. fetch_list — List 단계 캐시 (TTL 6h)
 # ══════════════════════════════════════════════════════
@@ -708,6 +716,30 @@ def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:  
                 st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;✅ 확인: {item}")
 
 
+def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
+    """정책 기사의 산업별 영향 해석 카드."""
+    if industry_key == "일반":
+        return
+    profile = get_profile(industry_key)
+    title = doc.get("title", "")
+
+    keywords = profile.get("keywords", [])
+    matched = [kw for kw in keywords if kw in title]
+    if not matched:
+        return
+
+    st.html(f"""
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;
+                padding:14px 16px;margin:8px 0">
+      <div style="font-size:11px;font-weight:700;color:#c2410c;margin-bottom:6px">
+        {profile['icon']} {profile['label']} 영향 분석
+      </div>
+      <div style="font-size:12px;color:#1e293b">
+        이 정책은 <b>{', '.join(matched[:3])}</b> 관련 내용으로, {profile['label']} 산업에 직접 영향이 예상됩니다.
+      </div>
+    </div>
+    """)
+
 
 # ══════════════════════════════════════════════════════
 # 리포트 생성 함수
@@ -832,7 +864,9 @@ def generate_report_html(
         val_size  = "28px" if large else "20px"
         try:
             val_f  = float(str(d.get("value", "0")).replace(",", "").replace("+", ""))
-            impact = _auto_business_impact(label, val_f)
+            from core.signal_interpreter import interpret_signal as _interp_sig
+            _interp = _interp_sig(label, val_f, d.get("trend", "→"), st.session_state.get("selected_industry", "일반"))
+            impact = f'{_interp["signal"]} — {_interp["impact"]}'
         except Exception:
             impact = ""
         impact_html = (
@@ -1365,10 +1399,15 @@ def _render_kpi_section() -> None:
                 val_float = float(val_str.replace(",", "").replace("+", ""))
             except (ValueError, TypeError):
                 val_float = 0.0
-            impact = _auto_business_impact(label, val_float)
+            _kpi_ind = st.session_state.get("selected_industry", "일반")
+            try:
+                from core.signal_interpreter import interpret_signal as _interp_sig
+                _interp = _interp_sig(label, val_float, trend, _kpi_ind)
+                impact = f'{_interp["signal"]} — {_interp["impact"]}'
+            except Exception:
+                impact = ""
 
             # ── Badge (산업 핵심 지표 + 상태 배지) ──────────────
-            _kpi_ind = st.session_state.get("selected_industry", "일반")
             _kpi_weights = get_profile(_kpi_ind).get("macro_weights", {})
             _is_key = _kpi_weights.get(label, 0) >= 1.5
             key_badge_html = (
@@ -1551,6 +1590,50 @@ def _render_macro_overview_and_insights() -> None:
       </div>
     </div>
     """)
+
+
+def _render_signal_cards(industry_key: str) -> None:
+    """Gauge 차트 대신 Signal → Impact → Risk → Action 카드 표시."""
+    from core.signal_interpreter import interpret_all_signals
+    signals = interpret_all_signals(_MACRO, industry_key)
+    if not signals:
+        return
+
+    st.html("""
+    <div style="margin:8px 0">
+      <span style="font-size:11px;font-weight:700;color:#64748b;
+                   text-transform:uppercase;letter-spacing:1.5px">
+        🎯 산업별 경제 신호 해석
+      </span>
+    </div>
+    """)
+
+    # 상위 4개만 카드로 표시
+    top = signals[:4]
+    cols = st.columns(len(top), gap="small")
+
+    _COLOR = {"▲": "#dc2626", "▼": "#2563eb", "→": "#6b7280"}
+
+    for sig, col in zip(top, cols):
+        with col:
+            tc = _COLOR.get(sig["trend"], "#6b7280")
+            risk_html = f'<div style="font-size:11px;color:#dc2626;margin-top:6px">⚠️ {sig["risk"]}</div>' if sig["risk"] and sig["risk"] != "—" else ""
+            st.html(f"""
+            <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;
+                        padding:16px;margin-bottom:4px">
+              <div style="font-size:11px;color:#64748b;font-weight:600">{sig['label']}</div>
+              <div style="font-size:24px;font-weight:800;color:#0f172a;margin:4px 0">
+                {sig['value']}<span style="font-size:14px;color:{tc};margin-left:4px">{sig['trend']}</span>
+              </div>
+              <div style="font-size:12px;font-weight:600;color:#1e40af;margin:6px 0;
+                          padding:4px 8px;background:#eff6ff;border-radius:6px">
+                📡 {sig['signal']}
+              </div>
+              <div style="font-size:11px;color:#334155;margin-top:4px">💼 {sig['impact']}</div>
+              {risk_html}
+              <div style="font-size:11px;color:#16a34a;margin-top:6px">✅ {sig['action']}</div>
+            </div>
+            """)
 
 
 def _render_trend_charts() -> None:
@@ -1777,10 +1860,15 @@ def _render_secondary_indicators() -> None:
                 val_float = float(val_str.replace(",", "").replace("+", ""))
             except (ValueError, TypeError):
                 val_float = 0.0
-            impact = _auto_business_impact(label, val_float)
+            _sec_ind = st.session_state.get("selected_industry", "일반")
+            try:
+                from core.signal_interpreter import interpret_signal as _interp_sig
+                _interp = _interp_sig(label, val_float, trend, _sec_ind)
+                impact = f'{_interp["signal"]} — {_interp["impact"]}'
+            except Exception:
+                impact = ""
 
             # 산업별 핵심 지표 배지
-            _sec_ind = st.session_state.get("selected_industry", "일반")
             _sec_weights = get_profile(_sec_ind).get("macro_weights", {})
             _sec_key = _sec_weights.get(label, 0) >= 1.5
             _sec_key_badge = (
@@ -1967,7 +2055,14 @@ def render_ui() -> None:
 
     # ══ TAB 1: 경제신호 ══════════════════════════════
     with tab1:
+        # 1. 산업별 핵심 변수 카드
         _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
+
+        # 2. Signal Cards — 산업별 해석
+        _render_signal_cards(_sel_ind)
+        st.html("<div style='height:16px'></div>")
+
+        # 3. KPI 카드
         st.html("""
         <div style="margin-bottom:8px;margin-top:4px">
           <span style="font-size:11px;font-weight:700;color:#64748b;
@@ -1984,14 +2079,20 @@ def render_ui() -> None:
                 if warn:
                     st.warning(warn)
 
-        st.html("<div style='height:24px'></div>")
-        _render_trend_charts()
+        # 4. Key Insights
         st.html("<div style='height:16px'></div>")
         _render_macro_overview_and_insights()
         st.html("<div style='height:8px'></div>")
+
+        # 5. 보조 지표
         _render_secondary_indicators()
 
-        # (실행 체크리스트는 _render_today_signal에서 탭 상단에 표시)
+        # 6. 데이터 출처
+        st.html("""
+        <div style="font-size:10px;color:#94a3b8;text-align:center;margin-top:16px;padding:8px">
+          📊 데이터 출처: 한국은행 ECOS API | 업데이트: 월 1회 | 기사: KDI 나라경제
+        </div>
+        """)
 
     # ══ TAB 2: 정책브리핑 ════════════════════════════
     with tab2:
@@ -2198,6 +2299,7 @@ def render_ui() -> None:
                             key=f"body_{doc['doc_id']}",
                         )
 
+                    _render_policy_industry_impact(doc, _cur_ind)
                     _render_policy_detail(doc, detail)
                     _render_strategy_questions(doc, detail)
 
