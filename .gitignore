@@ -37,3 +37,27 @@ Thumbs.db
 # output_script.txt / output_script.srt / latest_output_script.txt 는 추적 대상
 # 60초경제신호_SaaS_전략로드맵.docx — 로컬 기획 문서 (커밋 불필요)
 60초경제신호_SaaS_전략로드맵.docx
+
+# 서비스 계정 키 (민감 정보)
+*.json
+!data/schema.json
+!package.json
+
+# 데이터 파일 (로컬 전용)
+data/feedback.json
+data/pipeline_log.jsonl
+data/score_history.json
+data/user_logs/
+data/subscribers.json
+data/watchlist.json
+data/macro.json
+data/content_db.json
+
+# 출력 파일
+outputs/
+streamlit_log.txt
+_ul
+
+# 임시 백업
+*.bak
+*.bak2

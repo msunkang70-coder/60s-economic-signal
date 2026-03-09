@@ -49,238 +49,68 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Global CSS: Design System v2 ─────────────────────────────────────────
+# ── Global CSS: mobile responsiveness + Plotly chart spacing ──────────────
 st.html("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
+/* ── Research Plan Color Theme ───────────────────── */
+/* Page background — very light lavender */
+.stApp { background-color: #F4F4FF !important; }
+.stMain { background-color: #F4F4FF !important; }
 
-/* ══════════════════════════════════════════════
-   DESIGN SYSTEM v2 — 60s 수출경제신호
-   폰트: Inter | 테마: Indigo + Slate
-   ══════════════════════════════════════════════ */
-
-/* ── 전역 폰트 + 배경 ── */
-*, *::before, *::after { box-sizing: border-box; }
-html, body, .stApp {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
-    background-color: #F1F2FF !important;
-}
-.stMain { background-color: #F1F2FF !important; }
-
-/* ── 컨테이너 여백 ── */
-.block-container {
-    padding-top: 1.2rem !important;
-    padding-bottom: 2rem !important;
-    max-width: 1200px !important;
-}
-
-/* ── 사이드바 ── */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #FFFFFF 0%, #EEF0FF 100%) !important;
-    border-right: 1px solid #DDE1FF !important;
-}
+/* Sidebar — light lavender gradient */
 [data-testid="stSidebar"] > div:first-child {
-    background: linear-gradient(180deg, #FFFFFF 0%, #EEF0FF 100%) !important;
+    background: linear-gradient(180deg, #EAEBFF 0%, #E0E1FF 100%) !important;
 }
-[data-testid="stSidebar"] .stMarkdown h3 {
-    color: #4347C8 !important;
-    font-size: 13px !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.5px !important;
-    text-transform: uppercase !important;
-    margin-bottom: 8px !important;
-}
-[data-testid="stSidebar"] label {
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    color: #64748B !important;
-}
+[data-testid="stSidebar"] { background-color: #EAEBFF !important; }
 
-/* ── Selectbox 스타일 ── */
-[data-testid="stSelectbox"] > div > div {
-    border-radius: 10px !important;
-    border: 1.5px solid #C7CAF5 !important;
-    background: #FFFFFF !important;
+/* Tab bar — pill style on lavender bg */
+[data-testid="stTabs"] [role="tablist"] {
+    background: #EAEBFF;
+    border-radius: 12px;
+    padding: 4px;
+    gap: 4px;
+}
+[data-testid="stTabs"] [role="tab"] {
+    border-radius: 8px !important;
     font-weight: 600 !important;
-    font-size: 14px !important;
+    color: #5B5FEE !important;
 }
-[data-testid="stSelectbox"] > div > div:focus-within {
-    border-color: #5B5FEE !important;
-    box-shadow: 0 0 0 3px rgba(91,95,238,0.15) !important;
-}
-
-/* ── 버튼 스타일 ── */
-.stButton > button {
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-    font-size: 13px !important;
-    border: 1.5px solid #C7CAF5 !important;
-    background: #FFFFFF !important;
-    color: #4347C8 !important;
-    transition: all 0.18s ease !important;
-    padding: 6px 16px !important;
-}
-.stButton > button:hover {
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
     background: #5B5FEE !important;
-    color: #FFFFFF !important;
-    border-color: #5B5FEE !important;
-    box-shadow: 0 4px 12px rgba(91,95,238,0.3) !important;
-    transform: translateY(-1px) !important;
-}
-.stButton > button[kind="primary"] {
-    background: #5B5FEE !important;
-    color: #FFFFFF !important;
-    border-color: #5B5FEE !important;
+    color: white !important;
 }
 
-/* ── Expander ── */
-[data-testid="stExpander"] {
-    border: 1.5px solid #DDE1FF !important;
-    border-radius: 14px !important;
-    background: #FFFFFF !important;
-    margin-bottom: 12px !important;
-    overflow: hidden !important;
-    box-shadow: 0 2px 8px rgba(91,95,238,0.06) !important;
-}
+/* Dividers — lavender tint */
+hr { border-color: #C8C9FF !important; opacity: 0.6; }
+
+/* Expander headers */
 [data-testid="stExpander"] summary {
-    background: #F6F7FF !important;
-    border-radius: 12px !important;
-    padding: 12px 16px !important;
-    font-weight: 700 !important;
-    font-size: 14px !important;
-    color: #3D40C4 !important;
-}
-[data-testid="stExpander"] summary:hover {
-    background: #ECEEFF !important;
-}
-[data-testid="stExpander"] > div:last-child {
-    padding: 4px 8px 8px !important;
+    background: #EAEBFF !important;
+    border-radius: 8px !important;
 }
 
-/* ── Dividers ── */
-hr {
-    border: none !important;
-    border-top: 1.5px solid #E2E5FF !important;
-    margin: 20px 0 !important;
-    opacity: 1 !important;
-}
+/* Remove default Streamlit top padding */
+.block-container { padding-top: 1.5rem !important; }
 
-/* ── st.metric 카드 ── */
-[data-testid="stMetric"] {
-    background: #FFFFFF !important;
-    border: 1.5px solid #E2E5FF !important;
-    border-radius: 14px !important;
-    padding: 16px 18px !important;
-    box-shadow: 0 2px 8px rgba(91,95,238,0.07) !important;
-    transition: box-shadow 0.18s ease, transform 0.18s ease !important;
-}
-[data-testid="stMetric"]:hover {
-    box-shadow: 0 6px 20px rgba(91,95,238,0.14) !important;
-    transform: translateY(-2px) !important;
-}
-[data-testid="stMetricLabel"] {
-    font-size: 11px !important;
-    font-weight: 700 !important;
-    color: #94A3B8 !important;
-    letter-spacing: 0.5px !important;
-    text-transform: uppercase !important;
-}
-[data-testid="stMetricValue"] {
-    font-size: 22px !important;
-    font-weight: 800 !important;
-    color: #1E293B !important;
-    line-height: 1.2 !important;
-}
-[data-testid="stMetricDelta"] {
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    margin-top: 2px !important;
-}
-
-/* ── Info / Warning / Error / Success 박스 ── */
-[data-testid="stAlert"] {
-    border-radius: 12px !important;
-    border-width: 1.5px !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-}
-
-/* ── 섹션 헤더 (st.header) ── */
-h2 {
-    font-size: 17px !important;
-    font-weight: 800 !important;
-    color: #1E293B !important;
-    letter-spacing: -0.3px !important;
-    margin-top: 8px !important;
-    margin-bottom: 12px !important;
-    padding-bottom: 8px !important;
-    border-bottom: 2px solid #E2E5FF !important;
-}
-
-/* ── 서브헤더 (st.subheader) ── */
-h3 {
-    font-size: 15px !important;
-    font-weight: 700 !important;
-    color: #334155 !important;
-}
-
-/* ── 텍스트 인풋 ── */
-[data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea {
-    border-radius: 10px !important;
-    border: 1.5px solid #C7CAF5 !important;
-    font-size: 13px !important;
-    background: #FAFBFF !important;
-}
-[data-testid="stTextInput"] input:focus,
-[data-testid="stTextArea"] textarea:focus {
-    border-color: #5B5FEE !important;
-    box-shadow: 0 0 0 3px rgba(91,95,238,0.12) !important;
-}
-
-/* ── Progress Bar ── */
-[data-testid="stProgressBar"] > div > div {
-    background: linear-gradient(90deg, #5B5FEE, #818CF8) !important;
-    border-radius: 4px !important;
-}
-
-/* ── Spinner ── */
-[data-testid="stSpinner"] { color: #5B5FEE !important; }
-
-/* ── st.caption ── */
-.stCaption, [data-testid="stCaptionContainer"] {
-    font-size: 11.5px !important;
-    color: #94A3B8 !important;
-}
-
-/* ── 카드 호버 리프트 효과 ── */
-div[data-testid="stMarkdownContainer"] .card-hover:hover {
-    transform: translateY(-2px);
-    transition: transform 0.18s ease;
-}
-
-/* ── Plotly 차트 ── */
-.js-plotly-plot { margin-bottom: 0 !important; border-radius: 12px !important; }
-
-/* ── 모바일 반응형 ── */
+/* Mobile: stack columns vertically */
 @media (max-width: 768px) {
     [data-testid="column"] { width: 100% !important; min-width: 100% !important; }
     [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
-    .block-container { padding-left: 12px !important; padding-right: 12px !important; }
-    [data-testid="stMetricValue"] { font-size: 18px !important; }
 }
 
-/* ── 숨기기 ── */
+/* Remove plotly chart bottom margin */
+.js-plotly-plot { margin-bottom: 0 !important; }
+
+/* Card hover lift effect */
+div[data-testid="stMarkdownContainer"] > div:hover {
+    transform: translateY(-1px);
+    transition: transform 0.15s ease;
+}
+
+/* Hide Streamlit hamburger + footer */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 header[data-testid="stHeader"] { background: transparent !important; }
-
-/* ── 스크롤바 ── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #F1F2FF; }
-::-webkit-scrollbar-thumb { background: #C7CAF5; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #5B5FEE; }
-
 </style>
 """)
 
@@ -3335,87 +3165,31 @@ def _render_industry_impact_ranking(macro_data: dict) -> None:
 # 4-A. 오늘의 핵심 신호 카드
 # ══════════════════════════════════════════════════════
 def _render_today_signal(industry_key: str) -> None:
-    """탭 위에 '오늘의 핵심 경제 신호' 카드 렌더링 — Design v2."""
+    """탭 위에 '오늘의 핵심 경제 신호' 카드 렌더링."""
     signal = generate_today_signal(_MACRO, industry_key)
     if not signal:
         return
 
-    trend = signal.get("trend", "→")
-    if trend == "▲":
-        trend_color = "#EF4444"
-        trend_bg    = "rgba(239,68,68,0.10)"
-        trend_label = "상승"
-    elif trend == "▼":
-        trend_color = "#3B82F6"
-        trend_bg    = "rgba(59,130,246,0.10)"
-        trend_label = "하락"
-    else:
-        trend_color = "#64748B"
-        trend_bg    = "rgba(100,116,139,0.10)"
-        trend_label = "보합"
-
-    checklist_items = signal.get("checklist", [])
+    trend_color = "#dc2626" if signal["trend"] == "▲" else "#2563eb" if signal["trend"] == "▼" else "#6b7280"
     checklist_html = "".join(
-        f'''<div style="display:flex;align-items:flex-start;gap:8px;margin:6px 0">
-              <span style="color:#5B5FEE;font-size:13px;flex-shrink:0;margin-top:1px">✦</span>
-              <span style="font-size:13px;color:#475569;line-height:1.5">{item}</span>
-            </div>'''
-        for item in checklist_items
+        f'<div style="margin:4px 0;font-size:13px">📌 확인: {item}</div>'
+        for item in signal.get("checklist", [])
     )
 
     st.html(f"""
-    <div style="
-        background: linear-gradient(135deg, #FFFFFF 0%, #F0F1FF 100%);
-        border: 1.5px solid #C7CAF5;
-        border-left: 5px solid #5B5FEE;
-        border-radius: 16px;
-        padding: 22px 28px;
-        margin-bottom: 20px;
-        box-shadow: 0 4px 20px rgba(91,95,238,0.10);
-    ">
-      <!-- 상단 레이블 -->
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
-        <span style="
-            background: linear-gradient(135deg,#5B5FEE,#818CF8);
-            color:#fff;font-size:10px;font-weight:800;
-            padding:3px 10px;border-radius:20px;letter-spacing:1px;
-            text-transform:uppercase">
-          ⚡ 오늘의 핵심 신호
-        </span>
-        <span style="
-            background:{trend_bg};color:{trend_color};
-            font-size:10px;font-weight:700;padding:3px 10px;
-            border-radius:20px;border:1px solid {trend_color}33">
-          {trend} {trend_label}
-        </span>
+    <div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);
+                border:2px solid #3b82f6;border-radius:16px;
+                padding:20px 24px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#3b82f6;margin-bottom:8px">
+        ⚡ 오늘의 핵심 경제 신호
       </div>
-
-      <!-- 지표명 + 값 -->
-      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-        <span style="font-size:15px;font-weight:700;color:#64748B">
-          {signal['label']}
-        </span>
-        <span style="font-size:30px;font-weight:900;color:#1E293B;letter-spacing:-1px;line-height:1">
-          {signal['value']}
-        </span>
-        <span style="font-size:26px;font-weight:900;color:{trend_color};line-height:1">
-          {trend}
-        </span>
+      <div style="font-size:22px;font-weight:800;color:#1e293b;margin-bottom:4px">
+        {signal['label']} {signal['value']} <span style="color:{trend_color}">{signal['trend']}</span>
       </div>
-
-      <!-- 영향 설명 -->
-      <div style="
-          font-size:14px;color:#475569;font-weight:500;
-          line-height:1.6;margin-bottom:14px;
-          padding: 10px 14px;
-          background: rgba(91,95,238,0.05);
-          border-radius: 10px;
-      ">
+      <div style="font-size:14px;color:#334155;margin-bottom:12px">
         {signal['impact']}
       </div>
-
-      <!-- 체크리스트 -->
-      {'<div style="border-top:1px solid #E2E5FF;padding-top:12px">' + checklist_html + '</div>' if checklist_items else ''}
+      {checklist_html}
     </div>
     """)
 
@@ -3424,77 +3198,33 @@ def _render_today_signal(industry_key: str) -> None:
 # 4-B. 산업별 핵심 변수 카드
 # ══════════════════════════════════════════════════════
 def _render_industry_variable_card(industry_key: str, docs: list) -> None:
-    """산업별 핵심 변수 카드 — Design v2."""
+    """Tab 1 상단에 산업별 핵심 변수 카드 표시."""
     if industry_key == "일반":
         return
 
     profile = get_profile(industry_key)
     cv_list = profile["critical_variables"]
 
-    STATUS_CONFIG = {
-        "danger":  {"color": "#EF4444", "bg": "rgba(239,68,68,0.08)",  "badge": "🔴 위험",   "border": "#FECACA"},
-        "warning": {"color": "#F97316", "bg": "rgba(249,115,22,0.08)", "badge": "🟠 경고",   "border": "#FED7AA"},
-        "caution": {"color": "#EAB308", "bg": "rgba(234,179,8,0.08)",  "badge": "🟡 주의",   "border": "#FEF08A"},
-        "normal":  {"color": "#22C55E", "bg": "rgba(34,197,94,0.06)",  "badge": "🟢 정상",   "border": "#BBF7D0"},
-    }
-
     items_html = ""
     for cv in cv_list:
+        # 거시지표와 매칭되는 변수는 현재값 표시
         macro_match = _MACRO.get(cv)
         if macro_match:
-            val   = macro_match.get("value", "")
-            trend = macro_match.get("trend", "→")
+            val = macro_match.get("value", "")
+            trend = macro_match.get("trend", "")
             status, _, status_label = _get_threshold_status(cv, str(val))
-            cfg = STATUS_CONFIG.get(status, STATUS_CONFIG["normal"])
-            trend_color = "#EF4444" if trend == "▲" else "#3B82F6" if trend == "▼" else "#94A3B8"
-            items_html += f"""
-            <div style="
-                display:flex;align-items:center;justify-content:space-between;
-                background:{cfg['bg']};border:1px solid {cfg['border']};
-                border-radius:10px;padding:10px 14px;margin-bottom:8px;
-            ">
-              <div style="display:flex;align-items:center;gap:8px">
-                <span style="font-size:12px;color:#64748B;font-weight:600">{cv}</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <span style="font-size:15px;font-weight:800;color:#1E293B">{val}</span>
-                <span style="font-size:16px;color:{trend_color};font-weight:800">{trend}</span>
-                <span style="font-size:10px;font-weight:700;color:{cfg['color']};
-                             padding:2px 8px;border-radius:20px;
-                             background:rgba(255,255,255,0.7);border:1px solid {cfg['border']}">{cfg['badge']}</span>
-              </div>
-            </div>"""
+            status_badge = f' <span style="color:#dc2626;font-size:11px">⚠️{status_label}</span>' if status in ("warning", "danger", "caution") else ""
+            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → {val} {trend}{status_badge}</div>'
         else:
+            # 기사 매칭 수 카운트
             count = sum(1 for d in docs if cv.replace("(", "").replace(")", "") in d.get("title", ""))
-            count_color = "#5B5FEE" if count > 0 else "#94A3B8"
-            items_html += f"""
-            <div style="
-                display:flex;align-items:center;justify-content:space-between;
-                background:#F8F9FF;border:1px solid #E2E5FF;
-                border-radius:10px;padding:10px 14px;margin-bottom:8px;
-            ">
-              <span style="font-size:12px;color:#64748B;font-weight:600">{cv}</span>
-              <span style="font-size:12px;font-weight:700;color:{count_color};
-                           padding:2px 10px;background:rgba(91,95,238,0.08);
-                           border-radius:20px">관련 기사 {count}건</span>
-            </div>"""
+            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → 관련 기사 {count}건</div>'
 
     st.html(f"""
-    <div style="
-        background:#FFFFFF;
-        border:1.5px solid #DDE1FF;
-        border-top: 4px solid #22C55E;
-        border-radius:16px;
-        padding:18px 20px;
-        margin-bottom:20px;
-        box-shadow:0 2px 12px rgba(91,95,238,0.07);
-    ">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-        <span style="font-size:22px">{profile['icon']}</span>
-        <div>
-          <div style="font-size:13px;font-weight:800;color:#1E293B">{profile['label']}</div>
-          <div style="font-size:11px;color:#94A3B8;font-weight:500">핵심 모니터링 변수</div>
-        </div>
+    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:12px;
+                padding:16px 20px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#16a34a;margin-bottom:8px">
+        {profile['icon']} {profile['label']} 핵심 변수
       </div>
       {items_html}
     </div>
@@ -3750,10 +3480,7 @@ def render_ui() -> None:
     # ── [1] 오늘의 핵심 신호는 위에서 이미 렌더링됨 (_render_today_signal) ──
 
     # ── [2] 핵심 지표 KPI 카드 4종 ──────────────────────────────
-    st.html("""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 16px">
-      <span style="width:4px;height:22px;background:linear-gradient(180deg,#5B5FEE,#818CF8);border-radius:2px;display:inline-block"></span>
-      <span style="font-size:17px;font-weight:800;color:#1E293B;letter-spacing:-0.3px">📊 핵심 지표 KPI</span>
-    </div>""")
+    st.header("📊 핵심 지표 KPI")
     if _MACRO:
         _kpi_keys = ["환율(원/$)", "소비자물가(CPI)", "수출증가율", "기준금리"]
         _kpi_items = [(k, _MACRO[k]) for k in _kpi_keys if k in _MACRO]
@@ -3876,19 +3603,13 @@ def render_ui() -> None:
     st.divider()
 
     # ── [3] 산업별 핵심 변수 카드 ────────────────────────────
-    st.html("""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 16px">
-      <span style="width:4px;height:22px;background:linear-gradient(180deg,#22C55E,#4ADE80);border-radius:2px;display:inline-block"></span>
-      <span style="font-size:17px;font-weight:800;color:#1E293B;letter-spacing:-0.3px">🔬 산업별 핵심 변수</span>
-    </div>""")
+    st.header("🔬 산업별 핵심 변수")
     _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
 
     st.divider()
 
     # ── [4] 주요 기사 목록 (임팩트 스코어 내림차순) ──────────
-    st.html("""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 16px">
-      <span style="width:4px;height:22px;background:linear-gradient(180deg,#F97316,#FB923C);border-radius:2px;display:inline-block"></span>
-      <span style="font-size:17px;font-weight:800;color:#1E293B;letter-spacing:-0.3px">📰 주요 기사 목록</span>
-    </div>""")
+    st.header("📰 주요 기사 목록")
 
     # 기사 자동 수집 (session state 초기화)
     st.session_state.setdefault("docs", [])
@@ -4060,10 +3781,7 @@ def render_ui() -> None:
     st.divider()
 
     # ── [5] 리포트 다운로드 ──────────────────────────────────
-    st.html("""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 16px">
-      <span style="width:4px;height:22px;background:linear-gradient(180deg,#8B5CF6,#A78BFA);border-radius:2px;display:inline-block"></span>
-      <span style="font-size:17px;font-weight:800;color:#1E293B;letter-spacing:-0.3px">📥 리포트 다운로드</span>
-    </div>""")
+    st.header("📥 리포트 다운로드")
     _sel_doc = st.session_state.get("last_doc")
     _sel_detail = st.session_state.get("last_detail")
     if _sel_doc and _sel_detail:
@@ -4090,10 +3808,7 @@ def render_ui() -> None:
     # [6] ⚙️ 워치리스트 설정
     # ══════════════════════════════════════════════════════════════
     st.divider()
-    st.html("""<div style="display:flex;align-items:center;gap:10px;margin:4px 0 16px">
-      <span style="width:4px;height:22px;background:linear-gradient(180deg,#EF4444,#F87171);border-radius:2px;display:inline-block"></span>
-      <span style="font-size:17px;font-weight:800;color:#1E293B;letter-spacing:-0.3px">⚙️ 워치리스트 설정</span>
-    </div>""")
+    st.header("⚙️ 워치리스트 설정")
     st.caption("거시지표가 설정한 임계값을 초과하면 이메일 알림을 받습니다.")
 
     try:
