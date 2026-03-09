@@ -1,0 +1,45 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "updated_at": "2026-03-09 21:06:26",
+    "description": "워치리스트 — 거시지표 임계값 모니터링"
+  },
+  "items": [
+    {
+      "id": "usd_krw_above_1450",
+      "indicator": "환율(원/$)",
+      "condition": "above",
+      "threshold": 1450,
+      "industry_keys": [
+        "반도체",
+        "자동차"
+      ],
+      "notify_email": true,
+      "last_triggered": "2026-03-09 21:06:26"
+    },
+    {
+      "id": "cpi_above_3",
+      "indicator": "소비자물가(CPI)",
+      "condition": "above",
+      "threshold": 3.0,
+      "industry_keys": [
+        "소비재"
+      ],
+      "notify_email": true,
+      "last_triggered": null
+    },
+    {
+      "id": "export_growth_below_0",
+      "indicator": "수출증가율",
+      "condition": "below",
+      "threshold": 0,
+      "industry_keys": [
+        "반도체",
+        "자동차",
+        "화학"
+      ],
+      "notify_email": true,
+      "last_triggered": null
+    }
+  ]
+}

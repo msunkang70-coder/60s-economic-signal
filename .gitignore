@@ -4,6 +4,9 @@ __pycache__/
 *.pyo
 .Python
 
+# 환경변수 (API 키 포함 — .env.example은 추적)
+.env
+
 # 가상환경
 .venv/
 venv/

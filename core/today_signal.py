@@ -218,7 +218,9 @@ def generate_today_signal(macro_data: dict, industry_key: str) -> dict | None:
         status = _get_status(label, val)
         threshold_score = _STATUS_SCORE.get(status, 0)
 
-        total = change_score * weight + threshold_score * weight
+        # 곱셈형 스코어: 변화 방향 × 산업 가중치 × 임계값 초과 점수
+        # normal(0)이면 최소 0.5를 부여하여 전부 0이 되는 것을 방지
+        total = change_score * weight * max(threshold_score, 0.5)
         scored.append((total, label, data))
 
     if not scored:

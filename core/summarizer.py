@@ -35,6 +35,34 @@ from core.utils import single_line
 
 
 # ──────────────────────────────────────────────────────
+# 시스템 프롬프트 (산업 특화 LLM 브리핑용)
+# ──────────────────────────────────────────────────────
+SYSTEM_PROMPT = """
+당신은 수출 중소기업 CEO를 위한 경제 브리핑 전문가입니다.
+분석 대상 산업: {industry_label}
+
+모든 분석은 반드시 이 산업의 수출기업 관점에서 작성합니다.
+일반적인 경제 설명은 하지 않습니다.
+
+출력 형식 (반드시 이 구조 준수):
+① [수출 환경] 환율·통상·시장 변화 핵심 — 1문장
+② [사업 영향] {industry_label} 기업 매출·비용·경쟁력 영향 — 1문장
+③ [실행 포인트] 이번 주 확인하거나 준비할 것 — 1문장
+"""
+
+
+def _resolve_industry_label(industry_key: str) -> str:
+    """industry_key에서 사람이 읽을 수 있는 산업 레이블을 반환."""
+    if not industry_key or industry_key == "일반":
+        return "일반 수출기업"
+    try:
+        from core.industry_config import get_profile
+        return get_profile(industry_key).get("label", "일반 수출기업")
+    except ImportError:
+        return "일반 수출기업"
+
+
+# ──────────────────────────────────────────────────────
 # 상수
 # ──────────────────────────────────────────────────────
 ECONOMIC_KEYWORDS = [
@@ -176,14 +204,9 @@ def _pick_best(
     return ""
 
 
-def _clip_sent(s: str, n: int = 75) -> str:
-    """문장을 n자 이내로 자른다. 줄임표(…) 금지 — 단어 경계에서 자름."""
-    if len(s) <= n:
-        return s
-    # 단어 경계(공백) 기준으로 n자 이내 최대 길이
-    cut = s[:n]
-    last_space = cut.rfind(" ")
-    return cut[:last_space] if last_space > n // 2 else cut
+def _clip_sent(s: str, n: int = 9999) -> str:
+    """문장을 그대로 반환한다. 잘림(truncation) 금지."""
+    return s.strip()
 
 
 def _dominant_topic_words(pool: list, title_words: set) -> set:
@@ -414,7 +437,9 @@ def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반"
         return None
 
     industry_context = _build_industry_context(industry_key)
+    industry_label = _resolve_industry_label(industry_key)
     prompt = _LLM_PROMPT.format(title=title or "", body=body_trunc, industry_context=industry_context)
+    system_msg = SYSTEM_PROMPT.format(industry_label=industry_label).strip()
 
     try:
         resp = requests.post(
@@ -425,8 +450,11 @@ def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반"
             },
             json={
                 "model":       "llama-3.3-70b-versatile",
-                "messages":    [{"role": "user", "content": prompt}],
-                "max_tokens":  512,
+                "messages":    [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens":  4096,
                 "temperature": 0.3,
             },
             timeout=15,
@@ -497,7 +525,7 @@ def summarize_rule_based(
     sentences = [s.strip() for s in raw_sents if 15 <= len(s.strip()) <= 200]
 
     if not sentences:
-        return text[:150]   # ★ MODIFIED v2: "..." 제거
+        return text.strip()
 
     # 산업 키워드 로드
     _ind_kws: list[str] = []
@@ -553,7 +581,7 @@ def summarize_rule_based(
 
     # 2줄 이하 요청 시에만 단순 join
     summary = " ".join(extracted)
-    return summary if summary else text[:150]
+    return summary if summary else text.strip()
 
 
 # ──────────────────────────────────────────────────────
@@ -666,8 +694,8 @@ def _make_implications(s2: str) -> tuple:
         personal_raw = s2_parts[0]
         corp_raw = s2_parts[1]
     else:
-        personal_raw = s2_parts[0] if s2_parts else s2[:70]
-        corp_raw = s2_parts[0] if s2_parts else s2[:70]
+        personal_raw = s2_parts[0] if s2_parts else s2.strip()
+        corp_raw = s2_parts[0] if s2_parts else s2.strip()
 
     _PERSONAL_START = ("개인", "가계", "소비자", "근로자", "직장인", "나는", "우리는")
     _CORP_START = ("기업", "회사", "사업자", "경영자", "제조업")
@@ -792,8 +820,8 @@ def build_fact_pack(text: str, title: str = "") -> dict:
     if not sentences:
         return {
             "title": title,
-            "key_facts": [text[:150]],
-            "key_issues": [text[:100]],
+            "key_facts": [text.strip()],
+            "key_issues": [text.strip()],
             "risk": "", "opportunity": "", "confirmed": [], "uncertain": [],
             "has_numbers": bool(re.search(r"\d", text)),
         }
@@ -869,7 +897,7 @@ def _build_issue_sentence(fact_pack: dict, index: int) -> str:
 
     규칙: 줄임표("…") 절대 금지. 완전한 문장만 반환.
     """
-    marker = f"- 이슈 {index + 1}"
+    marker = f"이슈{index + 1}"
 
     def _clean(s: str) -> str:
         """줄임표 안전 제거."""
@@ -885,9 +913,8 @@ def _build_issue_sentence(fact_pack: dict, index: int) -> str:
     if fact_pack.get("key_issues"):
         return f"{marker}: {_clean(fact_pack['key_issues'][0])}"
 
-    # 폴백: 수치 없음 명시 (수치 정보 없다고 명확히 고지)
-    title_hint = (fact_pack.get("title") or "해당 기사")[:20]
-    return f"{marker}: [{title_hint}] 수치 정보는 기사에 제한적입니다."
+    # 폴백: 수치 없음 명시
+    return f"{marker}: 수치 정보는 기사에 제한적입니다."
 
 
 def _build_interpretation_v2(fp0: dict, fp1: dict) -> tuple:
@@ -973,7 +1000,7 @@ def _build_issue_interpretation(fp: dict, issue_num: int) -> str:
         s2 = f"또한 {raw2}"
 
     body = f"{s1} {s2}".strip() if s2 else s1
-    return f"▶ 이슈 {issue_num} 해석: {body}"
+    return f"▶이슈{issue_num} 해석: {body}"
 
 
 def _build_implications_v2(fp2: dict) -> tuple:
@@ -1048,17 +1075,17 @@ def _validate_script(script: str) -> tuple:
     if not sections.get("hook", "").strip():
         problems.append("훅 섹션 비어 있음")
 
-    # 3) 핵심 이슈 이슈 1/2/3 모두 포함 (★ TASK-02: ①②③ → - 이슈 N: 형식)
+    # 3) 핵심 이슈 이슈1/2/3 모두 포함
     issues_text = sections.get("issues", "")
     for i in [1, 2, 3]:
-        if f"이슈 {i}:" not in issues_text:
-            problems.append(f"핵심 이슈에 이슈 {i} 없음")
+        if f"이슈{i}:" not in issues_text:
+            problems.append(f"핵심 이슈에 이슈{i} 없음")
 
-    # 4) 해석 이슈별 블록 3개 포함 (★ TASK-02)
+    # 4) 해석 이슈별 블록 3개 포함
     interp_text = sections.get("interp", "")
     for i in [1, 2, 3]:
-        if f"이슈 {i} 해석" not in interp_text:
-            problems.append(f"해석에 이슈 {i} 블록 없음")
+        if f"이슈{i} 해석" not in interp_text:
+            problems.append(f"해석에 이슈{i} 블록 없음")
     interp_lines = [ln for ln in interp_text.split("\n") if ln.strip()]
     if len(interp_lines) < 3:
         problems.append(f"해석 블록 수 부족 ({len(interp_lines)}줄, 최소 3줄)")
@@ -1214,8 +1241,17 @@ def generate_shorts_script(
     if impl_note:
         impl_block += f"\n{impl_note}"
 
+    # ── 참고 기사 목록 블록 생성 ──────────────────────────
+    ref_lines = [f"\n{'-' * 40}", "※ 참고 기사 목록"]
+    for i, art in enumerate(_articles[:3], 1):
+        ref_lines.append(f"  [{i}] {art.get('title', '제목 없음')}")
+        url = art.get("url", "")
+        if url:
+            ref_lines.append(f"      {url}")
+    ref_block = "\n".join(ref_lines)
+
     script = (
-        f"60초 경제신호 v2\n"          # ★ MODIFIED v2: 버전 표기
+        f"60초 경제신호 v2\n"
         f"페이지 제목: {page_title}\n"
         f"생성일시: {now}  |  분석강도: {intensity_label}({intensity}/5)\n"
         f"{'-' * 40}\n"
@@ -1223,16 +1259,17 @@ def generate_shorts_script(
         f"[0~5초 훅]\n"
         f"{hook}\n"
         f"\n"
-        f"[5~25초 핵심 이슈 3개]\n"
+        f"[5~25초]\n"
         f"{issue1}\n"
         f"{issue2}\n"
         f"{issue3}\n"
         f"\n"
-        f"[25~45초 해석]\n"
+        f"[25~45초]\n"
         f"{interp_block}\n"
         f"\n"
         f"[45~60초 개인/기업 시사점]\n"
-        f"{impl_block}"
+        f"{impl_block}\n"
+        f"{ref_block}"
     )
 
     # ── ★ Step 3: 자기검증 패스 ─────────────────────────────
@@ -1284,13 +1321,13 @@ def render_script_markdown(script: str) -> dict:
         # 구분선은 건너뜀
         if line.startswith("---") or set(line.strip()) <= {"-", "─"}:
             continue
-        if "[0~5초 훅]" in line:
+        if "[0~5초" in line:
             current = "hook"
             continue
-        elif "[5~25초 핵심 이슈" in line:
+        elif "[5~25초" in line:
             current = "issues"
             continue
-        elif "[25~45초 해석]" in line:
+        elif "[25~45초" in line:
             current = "interp"
             continue
         elif "[45~60초" in line:

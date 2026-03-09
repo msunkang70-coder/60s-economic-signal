@@ -29,7 +29,7 @@ from core.industry_config import get_industry_list, get_profile
 from core.feedback_store import save_feedback
 from core.impact_scorer import score_article, score_articles
 from core.action_checklist import generate_checklist
-from core.analytics import log_event
+from core.analytics import log_event, get_daily_summary
 from core.today_signal import generate_today_signal
 from core.macro_signal_engine import detect_macro_signals, get_signal_summary
 from core.industry_mapper import map_industry_impact, get_industry_comparison
@@ -127,6 +127,10 @@ try:
             print("[app] ⚠️  GROQ_API_KEY 없음 — 규칙 기반 폴백 사용")
 except Exception as _exc:
     print(f"[app] GROQ_API_KEY 주입 오류: {_exc}")
+
+# ── T-09: 이메일에서 기사 앵커 링크 처리 ──────────────────
+_query_params = st.query_params
+_target_article_id = _query_params.get("article_id", None)
 
 # ── 의미 기반 색상 상수 ─────────────────────────────────
 _SEMANTIC_COLORS = {
@@ -889,7 +893,7 @@ def _render_strategy_questions(doc: dict, detail: dict | None = None) -> None:
 
 
 def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
-    """기사 관련 산업 전략 질문 표시."""
+    """기사 관련 산업 전략 질문 + ✅ 실행 체크리스트 표시."""
     if industry_key == "일반":
         return
     profile = get_profile(industry_key)
@@ -913,6 +917,9 @@ def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
     for tmpl in templates[:2]:
         question = tmpl.format(kw=matched_kw[0] if matched_kw else "")
         st.markdown(f"- {question}")
+        items = generate_checklist(question, doc, industry_key)
+        if items:
+            st.markdown("\n".join(f"  - ✅ {item}" for item in items))
 
 
 def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
@@ -941,7 +948,7 @@ def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
     """)
 
 def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
-    """기사 관련 산업 전략 질문 표시."""
+    """기사 관련 산업 전략 질문 + ✅ 실행 체크리스트 표시."""
     if industry_key == "일반":
         return
     profile = get_profile(industry_key)
@@ -965,6 +972,9 @@ def _render_article_strategy_questions(doc: dict, industry_key: str) -> None:
     for tmpl in templates[:2]:
         question = tmpl.format(kw=matched_kw[0] if matched_kw else "")
         st.markdown(f"- {question}")
+        items = generate_checklist(question, doc, industry_key)
+        if items:
+            st.markdown("\n".join(f"  - ✅ {item}" for item in items))
 
 
 def _render_policy_industry_impact(doc: dict, industry_key: str) -> None:
@@ -3230,7 +3240,21 @@ _KDI_URL = "https://eiec.kdi.re.kr/publish/naraList.do"
 def render_ui() -> None:
     # ── 페이지 뷰 로깅 (세션당 1회) ──────────────────
     if "page_view_logged" not in st.session_state:
-        log_event("page_view")
+        try:
+            _utm_source = st.query_params.get("utm_source", "")
+            _utm_article = st.query_params.get("article_id", "")
+            log_event("page_view", detail={
+                "utm_source": _utm_source,
+                "article_id": _utm_article,
+            } if _utm_source else None)
+            # 이메일 링크를 통한 접속 시 email_click 이벤트도 기록
+            if _utm_source == "email":
+                log_event("email_click", detail={
+                    "utm_campaign": st.query_params.get("utm_campaign", ""),
+                    "article_id": _utm_article,
+                })
+        except Exception:
+            log_event("page_view")
         st.session_state["page_view_logged"] = True
 
     # ── 사이드바: 산업 선택 + Fake Door ───────────────
@@ -3372,6 +3396,41 @@ def render_ui() -> None:
         else:
             st.caption("이메일 미설정 — secrets.toml [email] 섹션을 확인하세요")
 
+        # ── 오늘의 활동 통계 ──────────────────────────
+        st.divider()
+        st.caption("📊 오늘의 활동")
+        try:
+            _today_stats = get_daily_summary()
+            if _today_stats["total_events"] > 0:
+                st.caption(
+                    f"조회 {_today_stats['page_views']}회 · "
+                    f"기사 클릭 {_today_stats['article_clicks']}회"
+                )
+            else:
+                st.caption("아직 활동 기록이 없습니다")
+        except Exception:
+            st.caption("아직 활동 기록이 없습니다")
+
+        # ── T-11: 이메일 구독 신청 ──────────────────────
+        st.divider()
+        st.subheader("📬 이메일 구독")
+        with st.form("subscribe_form"):
+            _sub_company = st.text_input("기업명")
+            _sub_email = st.text_input("이메일")
+            _sub_ind_options = [item["key"] for item in _industry_list if item["key"] != "일반"]
+            _sub_industry = st.selectbox("관심 산업", _sub_ind_options)
+            _sub_submit = st.form_submit_button("무료 구독 신청")
+            if _sub_submit and _sub_email:
+                try:
+                    from core.subscription import add_subscriber
+                    add_subscriber(_sub_company, _sub_email, _sub_industry)
+                    st.success("구독 신청 완료!")
+                    log_event("subscribe", {"company": _sub_company, "industry": _sub_industry})
+                except Exception as _sub_err:
+                    st.error(f"구독 신청 오류: {_sub_err}")
+            elif _sub_submit and not _sub_email:
+                st.warning("이메일을 입력해 주세요.")
+
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
 
@@ -3410,345 +3469,766 @@ def render_ui() -> None:
                     st.error(f"갱신 실패: {_e}")
             st.rerun()
 
-    # ── 메인 탭 ─────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs(["📊 경제신호", "📰 정책브리핑", "📥 리포트"])
+    # ── 오늘의 핵심 신호 카드 (Hero 바로 아래, 탭 위) ──
+    _render_today_signal(_sel_ind)
 
-    # ══ TAB 1: 경제신호 ══════════════════════════════
-    with tab1:
-        # 신호 사전 계산 (여러 렌더링 함수에서 공유)
+
+    # ══════════════════════════════════════════════════════════════
+    # [T-08] 단일 스크롤 레이아웃 (탭 구조 대체)
+    # ══════════════════════════════════════════════════════════════
+
+    # ── [1] 오늘의 핵심 신호는 위에서 이미 렌더링됨 (_render_today_signal) ──
+
+    # ── [2] 핵심 지표 KPI 카드 4종 ──────────────────────────────
+    st.header("📊 핵심 지표 KPI")
+    if _MACRO:
+        _kpi_keys = ["환율(원/$)", "소비자물가(CPI)", "수출증가율", "기준금리"]
+        _kpi_items = [(k, _MACRO[k]) for k in _kpi_keys if k in _MACRO]
+        if _kpi_items:
+            _kpi_cols = st.columns(4)
+            for (_kpi_label, _kpi_data), _kpi_col in zip(_kpi_items, _kpi_cols):
+                with _kpi_col:
+                    _kpi_val = _kpi_data.get("value", "")
+                    _kpi_unit = _kpi_data.get("unit", "")
+                    _kpi_trend = _kpi_data.get("trend", "→")
+                    _kpi_prev = _kpi_data.get("prev_value", "")
+                    # Calculate delta for st.metric
+                    try:
+                        _kpi_v = float(str(_kpi_val).replace(",", "").replace("+", ""))
+                        _kpi_p = float(str(_kpi_prev).replace(",", "").replace("+", ""))
+                        _kpi_delta = round(_kpi_v - _kpi_p, 2)
+                        _kpi_delta_str = f"{_kpi_delta:+.2f} {_kpi_unit}"
+                    except (ValueError, TypeError):
+                        _kpi_delta_str = None
+                    _kpi_display = f"{_fmt_value(_kpi_label, _kpi_val)} {_kpi_unit}"
+                    st.metric(
+                        label=_kpi_label,
+                        value=_kpi_display,
+                        delta=_kpi_delta_str,
+                    )
+        # Macro validation warnings
+        for _m_label, _m_data in _MACRO.items():
+            _m_warn = _validate_macro_item(_m_label, _m_data)
+            if _m_warn:
+                st.warning(_m_warn)
+    else:
+        st.info("거시지표 데이터 없음 — ECOS API 키 설정 후 업데이트 버튼을 클릭하세요.")
+
+    st.divider()
+
+    # ── [2.5] 시나리오 분석 ──────────────────────────────────
+    with st.expander("🔮 시나리오 분석", expanded=False):
         try:
-            _signals = detect_macro_signals(_MACRO, _sel_ind) if _MACRO else []
-        except Exception:
-            _signals = []
+            from core.scenario_engine import SCENARIO_PRESETS, simulate_scenario
 
-        # [Item 4] 임계값 알림 — 최상단, 포커스 배너 위
-        if _MACRO:
-            _render_threshold_alerts(_MACRO, _sel_ind)
+            _sc_options = list(SCENARIO_PRESETS.keys())
+            _sc_labels = {k: f"{k} — {v['설명']}" for k, v in SCENARIO_PRESETS.items()}
+            _sc_col1, _sc_col2 = st.columns([3, 1])
+            with _sc_col1:
+                _sc_selected = st.selectbox(
+                    "시나리오 프리셋",
+                    options=_sc_options,
+                    format_func=lambda k: _sc_labels[k],
+                    key="scenario_preset",
+                )
+            with _sc_col2:
+                _sc_run = st.button("🚀 분석 실행", use_container_width=True, key="btn_scenario_run")
 
-        # 0. 산업 포커스 배너 (선택 산업 + 민감도 태그)
-        _render_industry_focus(_sel_ind)
-        st.divider()
+            if _sc_run and _MACRO:
+                _sc_result = simulate_scenario(_MACRO, _sc_selected, _sel_ind)
 
-        # 0-1. 산업 임팩트 스코어 배너 (거시지표 trend 기반 자동 산출)
-        if _MACRO:
-            _render_impact_score_banner(_MACRO, _sel_ind)
+                # 결과 metric 3개
+                _sc_m1, _sc_m2, _sc_m3 = st.columns(3)
+                with _sc_m1:
+                    _sc_delta = _sc_result["impact_delta"]
+                    st.metric(
+                        label="영향도 변화",
+                        value=f"{_sc_result['after_score']:+.1f}",
+                        delta=f"{_sc_delta:+.1f}",
+                    )
+                with _sc_m2:
+                    if _sc_result["affected_kpis"]:
+                        _sc_kpi0 = _sc_result["affected_kpis"][0]
+                        st.metric(
+                            label=_sc_kpi0["kpi"],
+                            value=f"{_sc_kpi0['after']:,.1f}",
+                            delta=f"{_sc_kpi0['after'] - _sc_kpi0['before']:+,.1f}",
+                        )
+                    else:
+                        st.metric(label="핵심 KPI", value="—")
+                with _sc_m3:
+                    _sc_actions = _sc_result["action_recommendations"]
+                    st.metric(label="권고 액션", value=f"{len(_sc_actions)}건")
+                    for _sc_act in _sc_actions:
+                        st.caption(f"• {_sc_act}")
 
-        # [Item 3] Signal-to-Action 브리핑 카드 — 임팩트 배너 직후
-        if _MACRO and _signals:
-            _render_action_briefing(_MACRO, _sel_ind, _signals)
+                # before/after KPI 시각화
+                if _sc_result["affected_kpis"]:
+                    import pandas as pd
+                    _sc_chart_data = pd.DataFrame([
+                        {"지표": kpi["kpi"], "Before": kpi["before"], "After": kpi["after"]}
+                        for kpi in _sc_result["affected_kpis"]
+                    ]).set_index("지표")
+                    st.bar_chart(_sc_chart_data)
+            elif _sc_run and not _MACRO:
+                st.warning("거시지표 데이터가 없습니다. ECOS 업데이트를 먼저 실행하세요.")
+        except Exception as _sc_err:
+            st.error(f"시나리오 분석 오류: {_sc_err}")
 
-        # 1. 오늘의 거시경제 신호 + 3줄 브리핑
-        _render_daily_signal_summary(_MACRO, _sel_ind)
-        st.divider()
+    # ── [2.6] 글로벌 시장 추천 ───────────────────────────────
+    with st.expander("🌏 글로벌 시장 추천", expanded=False):
+        try:
+            from core.market_recommender import recommend_markets as _recommend_markets
 
-        # 2. 산업별 영향 요약 (3열 카드)
-        _render_industry_impact_summary(_signals, _sel_ind)
-        st.divider()
+            if st.button("🚀 추천 받기", use_container_width=True, key="btn_market_recommend"):
+                with st.spinner("유망 시장 분석 중..."):
+                    _mr_results = _recommend_markets(_sel_ind, _MACRO)
 
-        # 3. 전략적 시사점 (expander × 3)
-        _render_strategic_insights(_MACRO, _sel_ind)
-        st.divider()
+                if _mr_results:
+                    _mr_cols = st.columns(len(_mr_results))
+                    for _mr_col, _mr in zip(_mr_cols, _mr_results):
+                        with _mr_col:
+                            _mr_fta_badge = "✅ FTA" if _mr["fta"] else "—"
+                            st.markdown(f"### {_mr['country']}")
+                            st.progress(min(_mr["score"], 100), text=f"종합 점수: {_mr['score']}점")
+                            st.metric(label="수출 성장률", value=_mr["growth_rate"])
+                            st.caption(f"교역 규모: {_mr['trade_value']}")
+                            st.caption(f"FTA: {_mr_fta_badge}")
+                            st.info(_mr["reason"])
+                else:
+                    st.warning("추천 가능한 시장 데이터가 없습니다.")
+        except Exception as _mr_err:
+            st.error(f"시장 추천 오류: {_mr_err}")
 
-        # 4. 핵심 거시경제 지표 KPI (v2 — 큰 숫자 + 색상 테두리 + 출처)
-        st.html("""
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;margin-top:4px">
-          <span style="background:#5B5FEE;color:white;min-width:26px;height:26px;
-                       border-radius:50%;display:inline-flex;align-items:center;
-                       justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">4</span>
-          <span style="font-size:14px;font-weight:800;color:#1E1B4B">핵심 지표</span>
-          <span style="font-size:11px;color:#5B5FEE;font-weight:600;
-                       background:#EAEBFF;padding:2px 10px;border-radius:20px">
-            Key Economic Indicators
-          </span>
-        </div>
-        """)
-        _render_kpi_section_v2(_sel_ind)
+    st.divider()
 
-        if _MACRO:
-            for label, data in _MACRO.items():
-                warn = _validate_macro_item(label, data)
-                if warn:
-                    st.warning(warn)
+    # ── [3] 산업별 핵심 변수 카드 ────────────────────────────
+    st.header("🔬 산업별 핵심 변수")
+    _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
 
-        # 5. 보조 지표 (엔화 / 수출물가 / 수입물가)
-        _render_secondary_indicators()
+    st.divider()
 
-        # 6. 전 산업 거시경제 영향 비교표 [Item 2: 종합 임팩트 스코어 추가]
-        _render_industry_comparison(_MACRO)
+    # ── [4] 주요 기사 목록 (임팩트 스코어 내림차순) ──────────
+    st.header("📰 주요 기사 목록")
 
-        # [Item 1] 산업별 임팩트 랭킹
-        if _MACRO:
-            _render_industry_impact_ranking(_MACRO)
+    # 기사 자동 수집 (session state 초기화)
+    st.session_state.setdefault("docs", [])
+    st.session_state.setdefault("selected_id", None)
+    st.session_state.setdefault("last_doc", None)
+    st.session_state.setdefault("last_detail", None)
+    st.session_state.setdefault("docs_fetched_at", "")
 
-        # 7. 데이터 출처 footer
-        st.html("""
-        <div style="font-size:10px;color:#94a3b8;text-align:center;margin-top:16px;padding:8px">
-          📊 데이터 출처: 한국은행 ECOS API | 업데이트: 월 1회 | 기사: KDI 나라경제
-        </div>
-        """)
-
-    # ══ TAB 2: 정책브리핑 ════════════════════════════
-    with tab2:
-        st.session_state.setdefault("docs", [])
-        st.session_state.setdefault("selected_id", None)
-        st.session_state.setdefault("last_doc", None)
-        st.session_state.setdefault("last_detail", None)
-        st.session_state.setdefault("docs_fetched_at", "")
-
-        # 앱 시작 시 docs가 비어있으면 자동 수집
-        _cur_ind = st.session_state.get("selected_industry", "일반")
-        if not st.session_state.docs:
-            with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
+    _cur_ind = st.session_state.get("selected_industry", "일반")
+    if not st.session_state.docs:
+        with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
+            try:
+                _raw = fetch_list(_KDI_URL, 20)
+                # T-07: 멀티 소스 통합 (KOTRA RSS)
                 try:
-                    _raw = fetch_list(_KDI_URL, 20)
+                    from core.extra_sources import fetch_all_sources
+                    _raw = fetch_all_sources(_raw, kotra_max=5)
+                except Exception as _extra_e:
+                    print(f"[extra_sources] 통합 실패, KDI만 사용: {_extra_e}")
+                _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+                st.session_state.docs = _rel if _rel else _raw
+                st.session_state.docs_others = _oth if _rel else []
+                st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
+            except Exception as _e:
+                st.error(f"자동 수집 오류: {_e}")
+
+    # 새로고침 + 필터
+    _scroll_col1, _scroll_col2 = st.columns([3, 1])
+    with _scroll_col1:
+        _scroll_kw = st.text_input("키워드 검색", placeholder="제목 내 검색", key="scroll_kw_search")
+    with _scroll_col2:
+        _scroll_top_n = st.number_input(
+            "목록 수", min_value=5, max_value=50, value=20, step=5,
+            key="scroll_top_n",
+        )
+        if st.button("🔄 새로 고침", type="primary", use_container_width=True, key="scroll_btn_load"):
+            with st.spinner("목록 수집 중..."):
+                try:
+                    _raw = fetch_list(_KDI_URL, int(_scroll_top_n))
+                    # T-07: 멀티 소스 통합 (KOTRA RSS)
+                    try:
+                        from core.extra_sources import fetch_all_sources
+                        _raw = fetch_all_sources(_raw, kotra_max=5)
+                    except Exception as _extra_e:
+                        print(f"[extra_sources] 통합 실패, KDI만 사용: {_extra_e}")
                     _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
                     st.session_state.docs = _rel if _rel else _raw
                     st.session_state.docs_others = _oth if _rel else []
                     st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
-                except Exception as _e:
-                    st.error(f"자동 수집 오류: {_e}")
-
-        col_l, col_r = st.columns([2, 3])
-
-        # ── 좌: 필터 + 문서 목록 ─────────────────────
-        with col_l:
-            with st.container(border=True):
-                st.markdown("**⚙️ 필터**")
-                top_n = st.number_input(
-                    "목록 수", min_value=5, max_value=50, value=20, step=5,
-                    key="top_n_input",
-                )
-                if st.button(
-                    "🔄 새로 고침", type="primary",
-                    use_container_width=True, key="btn_load",
-                ):
-                    with st.spinner("목록 수집 중..."):
-                        try:
-                            _raw = fetch_list(_KDI_URL, int(top_n))
-                            _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
-                            st.session_state.docs = _rel if _rel else _raw
-                            st.session_state.docs_others = _oth if _rel else []
-                            st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
-                            st.session_state.selected_id = None
-                            st.session_state.last_doc    = None
-                            st.session_state.last_detail = None
-                            if _rel:
-                                st.toast(f"✅ {len(_rel)}건 관련 기사 필터링 완료 (전체 {len(_raw)}건 중)")
-                        except Exception as e:
-                            st.error(f"오류: {e}")
-
-                # 요약 캐시 초기화 버튼 (Gemini 재생성용)
-                if st.button(
-                    "🤖 요약 캐시 초기화",
-                    use_container_width=True, key="btn_clear_cache",
-                    help="기존 규칙 기반 요약을 지우고 Gemini로 재생성합니다",
-                ):
-                    fetch_detail.clear()
                     st.session_state.selected_id = None
-                    st.session_state.last_doc    = None
+                    st.session_state.last_doc = None
                     st.session_state.last_detail = None
-                    st.toast("✅ 요약 캐시 초기화 완료 — 기사 다시 클릭하면 Gemini로 재생성됩니다")
-                    st.rerun()
+                    if _rel:
+                        st.toast(f"✅ {len(_rel)}건 관련 기사 필터링 완료 (전체 {len(_raw)}건 중)")
+                except Exception as e:
+                    st.error(f"오류: {e}")
 
-            docs: list = st.session_state.docs
-            if not docs:
-                st.info("목록을 불러오는 중입니다...")
-            if docs:
-                months = sorted({d["issue_yyyymm"] for d in docs}, reverse=True)
-                sel_month = st.selectbox("월 필터", ["전체"] + months, key="month_filter")
-                kw = st.text_input("키워드 검색", placeholder="제목 내 검색", key="kw_search")
+    docs: list = st.session_state.docs
 
-                filtered = [
-                    d for d in docs
-                    if (sel_month == "전체" or d["issue_yyyymm"] == sel_month)
-                    and (not kw or kw in d["title"])
-                ]
+    if docs:
+        # 임팩트 스코어 일괄 산출 + 내림차순 정렬
+        _scored_docs = score_articles(docs, _cur_ind, _MACRO)
+        _scored_docs = sorted(_scored_docs, key=lambda d: d.get("impact_score", 1), reverse=True)
 
-                sort_order = st.selectbox("정렬", ["최신순", "오래된순"], key="sort_order")
-                fetched_at = st.session_state.get("docs_fetched_at", "")
-                if fetched_at:
-                    st.caption(f"정렬: {sort_order} | 목록 기준: {fetched_at}(KST)")
-                else:
-                    st.caption(f"{len(filtered)}건")
+        # 키워드 필터 적용
+        if _scroll_kw:
+            _scored_docs = [d for d in _scored_docs if _scroll_kw in d.get("title", "")]
 
-                if any(not d.get("issue_yyyymm") for d in filtered):
-                    st.warning("일부 항목에 날짜 정보 없음")
+        _fetched_at = st.session_state.get("docs_fetched_at", "")
+        if _fetched_at:
+            st.caption(f"기사 {len(_scored_docs)}건 | 기준: {_fetched_at}(KST) | 임팩트 스코어 높은 순")
 
-                reverse = (sort_order == "최신순")
-                filtered = sorted(filtered, key=lambda d: d.get("issue_yyyymm", ""), reverse=reverse)
+        for _art_idx, _art in enumerate(_scored_docs, start=1):
+            _art_score = _art.get("impact_score", 1)
+            _art_stars = "★" * _art_score
+            _art_title = _art.get("title", "제목 없음")
+            _art_yyyymm = _art.get("issue_yyyymm", "")
+            _art_date = f"[{_art_yyyymm[:4]}.{_art_yyyymm[4:]}] " if len(_art_yyyymm) == 6 else ""
 
-                st.divider()
-
-                # 임팩트 스코어 일괄 산출
-                _scored_filtered = score_articles(filtered, _cur_ind, _MACRO)
-
-                # 5-C: 빈 목록 방어
-                if not _scored_filtered:
-                    st.info("선택한 필터 조건에 맞는 기사가 없습니다.")
-
-                for d in _scored_filtered:
-                    yyyymm   = d.get("issue_yyyymm", "")
-                    date_tag = f"[{yyyymm[:4]}.{yyyymm[4:]}] " if len(yyyymm) == 6 else ""
-                    _impact = d.get("impact_score", 1)
-                    _stars = "⭐" * _impact
-                    _label = f"📄 {date_tag}{_stars} {d['title'][:35]}{'...' if len(d['title']) > 35 else ''}"
-
-                    btn_type = "primary" if _impact >= 4 else "secondary"
-                    if st.button(
-                        _label,
-                        key=f"doc_{d['doc_id']}",
-                        use_container_width=True,
-                        type=btn_type,
-                    ):
-                        st.session_state.selected_id = d["doc_id"]
-                        log_event("article_click", {"doc_id": d["doc_id"], "title": d["title"][:50]})
-
-                _render_policy_summary(filtered)
-
-                # 관련성 낮은 기사 접기 expander
-                _others = st.session_state.get("docs_others", [])
-                if _others:
-                    with st.expander(f"기타 기사 {len(_others)}건 (관련성 낮음)"):
-                        for _od in _others:
-                            st.caption(f"📄 {_od['title'][:50]}")
-
-        # ── 우: 문서 뷰어 ────────────────────────────
-        with col_r:
-            docs   = st.session_state.docs
-            sel_id = st.session_state.selected_id
-
-            if not sel_id:
+            # 4-5점 기사: 컬러 배너
+            if _art_score >= 4:
                 st.html(
-                    '<div style="height:320px;display:flex;align-items:center;'
-                    'justify-content:center;border:2px dashed #e2e8f0;'
-                    'border-radius:12px;color:#94a3b8;font-size:1rem;background:#f8fafc">'
-                    "← 왼쪽에서 문서를 선택하세요</div>"
+                    f'<div style="background:#FFF3CD;border-left:4px solid #F59E0B;'
+                    f'border-radius:4px;padding:4px 12px;margin-bottom:2px;'
+                    f'font-size:11px;font-weight:700;color:#856404">'
+                    f'{_art_stars} 임팩트 {_art_score}점 — 주목 필요</div>'
                 )
-            else:
-                doc = next((d for d in docs if d["doc_id"] == sel_id), None)
-                if doc:
-                    with st.spinner("본문 수집 중..."):
-                        print(f"[app] fetch_detail 요청: doc_id={doc['doc_id']} url={doc['url'][:70]}")
-                        detail = fetch_detail(doc["doc_id"], doc["url"], doc["title"], industry_key=_cur_ind)
-                        print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,} summary_source={detail.get('summary_source','?')}")
 
-                        # ── LLM 재요약: 캐시에 저장된 "rule" 결과를 Groq 로 업그레이드 ──
-                        # @st.cache_data 는 함수 반환값 전체를 캐시하므로,
-                        # 이전에 Groq 키 없이 수집한 기사는 summary_source="rule" 로 캐시돼 있음.
-                        # 지금 키가 있으면 본문만 꺼내서 LLM 재요약 (HTML 재수집 없이).
+            # T-09: 이메일 앵커 링크로 접근 시 해당 기사 자동 펼침
+            _is_target = str(_art_idx) == str(_target_article_id) if _target_article_id else False
+            if _is_target:
+                try:
+                    log_event("article_click", {"doc_id": _art.get("doc_id", ""), "title": _art_title[:50], "source": "email"})
+                except Exception:
+                    pass
+            with st.expander(f"[{_art_stars}] {_art_date}{_art_title}", expanded=_is_target):
+                # 기사 상세 로드
+                with st.spinner("본문 수집 중..."):
+                    try:
+                        _art_detail = fetch_detail(
+                            _art["doc_id"], _art["url"], _art["title"],
+                            industry_key=_cur_ind,
+                        )
+                        # LLM 재요약 시도
                         if (
-                            detail.get("parse_status") == "success"
-                            and detail.get("summary_source") == "rule"
-                            and detail.get("body_text")
+                            _art_detail.get("parse_status") == "success"
+                            and _art_detail.get("summary_source") == "rule"
+                            and _art_detail.get("body_text")
                         ):
                             try:
                                 from core.summarizer import _get_llm_key, summarize_3line as _re_summarize
                                 if _get_llm_key():
-                                    print("[app] 🔄 캐시된 rule 요약 → Groq 재요약 시도")
                                     _new_sum, _new_src = _re_summarize(
-                                        detail["body_text"],
-                                        title=doc.get("title", ""),
+                                        _art_detail["body_text"],
+                                        title=_art.get("title", ""),
                                         industry_key=_cur_ind,
                                     )
                                     if _new_src == "groq":
-                                        detail = {
-                                            **detail,
-                                            "summary_3lines":  _new_sum,
-                                            "summary_source":  "groq",
-                                        }
-                                        print(f"[app] ✅ Groq 재요약 완료 ({len(_new_sum)}자)")
-                            except Exception as _re_err:
-                                print(f"[app] ⚠️  재요약 오류 (무시): {_re_err}")
+                                        _art_detail = {**_art_detail, "summary_3lines": _new_sum, "summary_source": "groq"}
+                            except Exception:
+                                pass
+                    except Exception as _fetch_err:
+                        st.error(f"본문 수집 오류: {_fetch_err}")
+                        _art_detail = None
 
-                    st.session_state.last_doc    = doc
-                    st.session_state.last_detail = detail
-
-                    with st.container(border=True):
-                        st.markdown(f"### {doc['title']}")
-                        _status_label = {
-                            "success": "✅ 성공",
-                            "short":   "⚠️ 본문 짧음",
-                            "fail":    "❌ 수집 실패",
-                        }.get(detail.get("parse_status", "fail"),
-                              detail.get("parse_status", ""))
-                        st.caption(
-                            f"발행: {doc['issue_yyyymm']} &nbsp;|&nbsp; "
-                            f"본문: {detail['body_len']:,}자 &nbsp;|&nbsp; "
-                            f"상태: {_status_label}"
+                if _art_detail:
+                    # 요약
+                    _pstatus = _art_detail.get("parse_status", "fail")
+                    if _pstatus == "success" and _art_detail.get("summary_3lines"):
+                        _render_summary_3lines(
+                            _art_detail["summary_3lines"],
+                            source=_art_detail.get("summary_source", ""),
                         )
-                        if doc.get("url"):
-                            st.markdown(
-                                f"**🔗 원문**: [{doc['url'][:70]}{'...' if len(doc['url'])>70 else ''}]({doc['url']})"
-                            )
-                            # URL 불일치 디버깅용: doc_id와 URL의 cidx 비교
-                            cidx_in_id  = doc["doc_id"].split("_")[1] if "_" in doc["doc_id"] else ""
-                            cidx_in_url = re.search(r"cidx=(\d+)", doc["url"])
-                            if cidx_in_url and cidx_in_id and cidx_in_url.group(1) != cidx_in_id:
-                                st.warning(
-                                    f"⚠️ doc_id({cidx_in_id})와 URL cidx({cidx_in_url.group(1)})가 다릅니다. "
-                                    f"fetch_detail이 올바른 URL을 사용하는지 확인하세요."
-                                )
+                    else:
+                        st.warning(f"⚠️ 요약 생성 불가: {_art_detail.get('fail_reason', '수집 실패')}")
 
-                    with st.container(border=True):
-                        st.markdown("**📝 3줄 요약** — 핵심 정책 · 주요 내용 · 영향·시사점")
-                        _pstatus = detail.get("parse_status", "fail")
-                        if _pstatus == "success" and detail.get("summary_3lines"):
-                            _render_summary_3lines(
-                                detail["summary_3lines"],
-                                source=detail.get("summary_source", ""),
-                            )
-                        else:
-                            _fail_reason = detail.get("fail_reason", "수집 실패")
-                            st.warning(f"⚠️ 요약 생성 불가: {_fail_reason}")
-                            st.markdown(
-                                "**해결 방법:**  \n"
-                                "- 📎 아래 **원문 링크**를 직접 클릭해 기사를 확인하세요.  \n"
-                                "- 🔄 잠시 후 다시 클릭하면 성공할 수 있습니다.  \n"
-                                "- 🌐 JavaScript 렌더링이 필요한 페이지는 브라우저에서 직접 열어보세요."
-                            )
+                    # 전략 질문
+                    _render_article_strategy_questions(_art, _cur_ind)
 
-                    if detail.get("keywords"):
-                        badges = " ".join(
-                            f'<span style="background:#e8f4fd;color:#1a6fa8;'
-                            f'padding:2px 8px;border-radius:4px;margin:2px;'
-                            f'font-size:0.82rem">{k}</span>'
-                            for k in detail["keywords"]
+                    # 체크리스트
+                    try:
+                        _art_checklist = generate_checklist(
+                            _art.get("title", ""), _cur_ind, _MACRO
                         )
-                        st.html(badges)
-                        st.markdown("")
+                        if _art_checklist:
+                            st.markdown("**✅ 액션 체크리스트**")
+                            for _cl_item in _art_checklist:
+                                st.checkbox(_cl_item, key=f"cl_{_art['doc_id']}_{_cl_item[:20]}")
+                    except Exception:
+                        pass
 
-                    with st.expander("📄 본문 전체", expanded=False):
-                        st.text_area(
-                            "본문 전체", value=detail["body_text"], height=300,
-                            disabled=True, label_visibility="collapsed",
-                            key=f"body_{doc['doc_id']}",
-                        )
+                    # 원문 링크
+                    if _art.get("url"):
+                        st.markdown(f"🔗 [원문 보기]({_art['url']})")
 
-                    _render_policy_industry_impact(doc, _cur_ind)
-                    _render_article_strategy_questions(doc, _cur_ind)
-                    _render_policy_detail(doc, detail)
-                    _render_strategy_questions(doc, detail)
+                    # 선택 문서로 저장 (리포트 다운로드용)
+                    st.session_state.last_doc = _art
+                    st.session_state.last_detail = _art_detail
 
-    # ══ TAB 3: 리포트 ════════════════════════════════
-    with tab3:
-        # 선택 문서 JSON 다운로드 (TAB 2에서 이동)
-        _sel_doc    = st.session_state.get("last_doc")
-        _sel_detail = st.session_state.get("last_detail")
-        if _sel_doc and _sel_detail:
-            _full_json = json.dumps(
-                {**_sel_doc, **_sel_detail}, ensure_ascii=False, indent=2
-            )
-            st.download_button(
-                "⬇️ 선택 문서 JSON 다운로드",
-                data=_full_json.encode("utf-8"),
-                file_name=f"{_sel_doc['doc_id']}.json",
-                mime="application/json",
-                key="dl_selected_json",
-                use_container_width=True,
-            )
+        # 기타 기사 (관련성 낮음)
+        _others = st.session_state.get("docs_others", [])
+        if _others:
+            with st.expander(f"기타 기사 {len(_others)}건 (관련성 낮음)"):
+                for _od in _others:
+                    st.caption(f"📄 {_od['title'][:50]}")
+    elif not st.session_state.docs:
+        st.info("목록을 불러오는 중입니다...")
 
-        _render_content_history()
-        _render_download_section(st.session_state.docs)
+    st.divider()
+
+    # ── [5] 리포트 다운로드 ──────────────────────────────────
+    st.header("📥 리포트 다운로드")
+    _sel_doc = st.session_state.get("last_doc")
+    _sel_detail = st.session_state.get("last_detail")
+    if _sel_doc and _sel_detail:
+        _full_json = json.dumps(
+            {**_sel_doc, **_sel_detail}, ensure_ascii=False, indent=2
+        )
+        try:
+            log_event("report_download", {"industry": _sel_ind})
+        except Exception:
+            pass
+        st.download_button(
+            "⬇️ 선택 문서 JSON 다운로드",
+            data=_full_json.encode("utf-8"),
+            file_name=f"{_sel_doc['doc_id']}.json",
+            mime="application/json",
+            key="dl_selected_json_scroll",
+            use_container_width=True,
+        )
+
+    _render_content_history()
+    _render_download_section(st.session_state.docs)
+
+    # ══════════════════════════════════════════════════════════════
+    # [6] ⚙️ 워치리스트 설정
+    # ══════════════════════════════════════════════════════════════
+    st.divider()
+    st.header("⚙️ 워치리스트 설정")
+    st.caption("거시지표가 설정한 임계값을 초과하면 이메일 알림을 받습니다.")
+
+    try:
+        from core.watchlist import get_items, add_item, remove_item
+
+        _WL_INDICATORS = [
+            "환율(원/$)", "소비자물가(CPI)", "수출증가율",
+            "기준금리", "원/100엔 환율", "수출물가지수", "수입물가지수",
+        ]
+        _WL_CONDITIONS = {"이상 (above)": "above", "이하 (below)": "below", "변동률 초과 (%)": "change_pct"}
+
+        with st.expander("➕ 새 워치리스트 항목 추가", expanded=False):
+            with st.form("watchlist_add_form"):
+                _wl_cols = st.columns([2, 2, 1.5])
+                with _wl_cols[0]:
+                    _wl_ind = st.selectbox("지표", _WL_INDICATORS, key="wl_indicator")
+                with _wl_cols[1]:
+                    _wl_cond_label = st.selectbox("조건", list(_WL_CONDITIONS.keys()), key="wl_condition")
+                with _wl_cols[2]:
+                    _wl_thr = st.number_input("임계값", value=1400.0, step=10.0, key="wl_threshold")
+                _wl_submit = st.form_submit_button("추가", use_container_width=True)
+                if _wl_submit:
+                    _wl_cond = _WL_CONDITIONS[_wl_cond_label]
+                    add_item(
+                        indicator=_wl_ind,
+                        condition=_wl_cond,
+                        threshold=_wl_thr,
+                        industry_keys=[_sel_ind] if _sel_ind != "일반" else [],
+                        notify_email=True,
+                    )
+                    st.success(f"✅ 추가 완료: {_wl_ind} {_wl_cond_label.split(' ')[0]} {_wl_thr}")
+                    st.rerun()
+
+        _wl_items = get_items()
+        if _wl_items:
+            import pandas as pd
+            _wl_cond_kr = {"above": "이상", "below": "이하", "change_pct": "변동률%"}
+            _wl_rows = []
+            for _it in _wl_items:
+                _wl_rows.append({
+                    "지표": _it.get("indicator", ""),
+                    "조건": _wl_cond_kr.get(_it.get("condition", ""), _it.get("condition", "")),
+                    "임계값": _it.get("threshold", 0),
+                    "관련 산업": ", ".join(_it.get("industry_keys", [])) or "전체",
+                    "이메일": "✅" if _it.get("notify_email") else "❌",
+                    "마지막 발동": _it.get("last_triggered") or "—",
+                })
+            st.dataframe(pd.DataFrame(_wl_rows), use_container_width=True, hide_index=True)
+
+            with st.expander("🗑️ 항목 삭제"):
+                _wl_del_options = {
+                    f"{it['indicator']} {_wl_cond_kr.get(it.get('condition',''), '')} {it.get('threshold', '')}": it["id"]
+                    for it in _wl_items
+                }
+                _wl_del_sel = st.selectbox("삭제할 항목", list(_wl_del_options.keys()), key="wl_delete_sel")
+                if st.button("삭제", key="wl_delete_btn"):
+                    remove_item(_wl_del_options[_wl_del_sel])
+                    st.success("삭제 완료")
+                    st.rerun()
+        else:
+            st.info("등록된 워치리스트 항목이 없습니다. 위에서 추가해주세요.")
+
+    except Exception as _wl_err:
+        st.warning(f"워치리스트 로드 실패: {_wl_err}")
+
+    # ══════════════════════════════════════════════════════════════
+    # [T-08] 탭 구조 → 단일 스크롤 변경으로 주석 처리 (원본 코드 보존)
+    # ══════════════════════════════════════════════════════════════
+    # [T-08] # ── 메인 탭 ─────────────────────────────────────
+    # [T-08] tab1, tab2, tab3 = st.tabs(["📊 경제신호", "📰 정책브리핑", "📥 리포트"])
+    # [T-08]
+    # [T-08] # ══ TAB 1: 경제신호 ══════════════════════════════
+    # [T-08] with tab1:
+    # [T-08] # 신호 사전 계산 (여러 렌더링 함수에서 공유)
+    # [T-08] try:
+    # [T-08] _signals = detect_macro_signals(_MACRO, _sel_ind) if _MACRO else []
+    # [T-08] except Exception:
+    # [T-08] _signals = []
+    # [T-08]
+    # [T-08] # [Item 4] 임계값 알림 — 최상단, 포커스 배너 위
+    # [T-08] if _MACRO:
+    # [T-08] _render_threshold_alerts(_MACRO, _sel_ind)
+    # [T-08]
+    # [T-08] # 0. 산업 포커스 배너 (선택 산업 + 민감도 태그)
+    # [T-08] _render_industry_focus(_sel_ind)
+    # [T-08]
+    # [T-08] # 0-0. 산업별 핵심 변수 카드 (일반 외 산업 선택 시)
+    # [T-08] _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
+    # [T-08] st.divider()
+    # [T-08]
+    # [T-08] # 0-1. 산업 임팩트 스코어 배너 (거시지표 trend 기반 자동 산출)
+    # [T-08] if _MACRO:
+    # [T-08] _render_impact_score_banner(_MACRO, _sel_ind)
+    # [T-08]
+    # [T-08] # [Item 3] Signal-to-Action 브리핑 카드 — 임팩트 배너 직후
+    # [T-08] if _MACRO and _signals:
+    # [T-08] _render_action_briefing(_MACRO, _sel_ind, _signals)
+    # [T-08]
+    # [T-08] # 1. 오늘의 거시경제 신호 + 3줄 브리핑
+    # [T-08] _render_daily_signal_summary(_MACRO, _sel_ind)
+    # [T-08] st.divider()
+    # [T-08]
+    # [T-08] # 2. 산업별 영향 요약 (3열 카드)
+    # [T-08] _render_industry_impact_summary(_signals, _sel_ind)
+    # [T-08] st.divider()
+    # [T-08]
+    # [T-08] # 3. 전략적 시사점 (expander × 3)
+    # [T-08] _render_strategic_insights(_MACRO, _sel_ind)
+    # [T-08] st.divider()
+    # [T-08]
+    # [T-08] # 4. 핵심 거시경제 지표 KPI (v2 — 큰 숫자 + 색상 테두리 + 출처)
+    # [T-08] st.html("""
+    # [T-08] <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;margin-top:4px">
+    # [T-08] <span style="background:#5B5FEE;color:white;min-width:26px;height:26px;
+    # [T-08] border-radius:50%;display:inline-flex;align-items:center;
+    # [T-08] justify-content:center;font-size:12px;font-weight:800;flex-shrink:0">4</span>
+    # [T-08] <span style="font-size:14px;font-weight:800;color:#1E1B4B">핵심 지표</span>
+    # [T-08] <span style="font-size:11px;color:#5B5FEE;font-weight:600;
+    # [T-08] background:#EAEBFF;padding:2px 10px;border-radius:20px">
+    # [T-08] Key Economic Indicators
+    # [T-08] </span>
+    # [T-08] </div>
+    # [T-08] """)
+    # [T-08] _render_kpi_section_v2(_sel_ind)
+    # [T-08]
+    # [T-08] if _MACRO:
+    # [T-08] for label, data in _MACRO.items():
+    # [T-08] warn = _validate_macro_item(label, data)
+    # [T-08] if warn:
+    # [T-08] st.warning(warn)
+    # [T-08]
+    # [T-08] # 5. 보조 지표 (엔화 / 수출물가 / 수입물가)
+    # [T-08] _render_secondary_indicators()
+    # [T-08]
+    # [T-08] # 6. 전 산업 거시경제 영향 비교표 [Item 2: 종합 임팩트 스코어 추가]
+    # [T-08] _render_industry_comparison(_MACRO)
+    # [T-08]
+    # [T-08] # [Item 1] 산업별 임팩트 랭킹
+    # [T-08] if _MACRO:
+    # [T-08] _render_industry_impact_ranking(_MACRO)
+    # [T-08]
+    # [T-08] # 7. 데이터 출처 footer
+    # [T-08] st.html("""
+    # [T-08] <div style="font-size:10px;color:#94a3b8;text-align:center;margin-top:16px;padding:8px">
+    # [T-08] 📊 데이터 출처: 한국은행 ECOS API | 업데이트: 월 1회 | 기사: KDI 나라경제
+    # [T-08] </div>
+    # [T-08] """)
+    # [T-08]
+    # [T-08] # ══ TAB 2: 정책브리핑 ════════════════════════════
+    # [T-08] with tab2:
+    # [T-08] st.session_state.setdefault("docs", [])
+    # [T-08] st.session_state.setdefault("selected_id", None)
+    # [T-08] st.session_state.setdefault("last_doc", None)
+    # [T-08] st.session_state.setdefault("last_detail", None)
+    # [T-08] st.session_state.setdefault("docs_fetched_at", "")
+    # [T-08]
+    # [T-08] # 앱 시작 시 docs가 비어있으면 자동 수집
+    # [T-08] _cur_ind = st.session_state.get("selected_industry", "일반")
+    # [T-08] if not st.session_state.docs:
+    # [T-08] with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
+    # [T-08] try:
+    # [T-08] _raw = fetch_list(_KDI_URL, 20)
+    # [T-08] _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+    # [T-08] st.session_state.docs = _rel if _rel else _raw
+    # [T-08] st.session_state.docs_others = _oth if _rel else []
+    # [T-08] st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
+    # [T-08] except Exception as _e:
+    # [T-08] st.error(f"자동 수집 오류: {_e}")
+    # [T-08]
+    # [T-08] col_l, col_r = st.columns([2, 3])
+    # [T-08]
+    # [T-08] # ── 좌: 필터 + 문서 목록 ─────────────────────
+    # [T-08] with col_l:
+    # [T-08] with st.container(border=True):
+    # [T-08] st.markdown("**⚙️ 필터**")
+    # [T-08] top_n = st.number_input(
+    # [T-08] "목록 수", min_value=5, max_value=50, value=20, step=5,
+    # [T-08] key="top_n_input",
+    # [T-08] )
+    # [T-08] if st.button(
+    # [T-08] "🔄 새로 고침", type="primary",
+    # [T-08] use_container_width=True, key="btn_load",
+    # [T-08] ):
+    # [T-08] with st.spinner("목록 수집 중..."):
+    # [T-08] try:
+    # [T-08] _raw = fetch_list(_KDI_URL, int(top_n))
+    # [T-08] _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+    # [T-08] st.session_state.docs = _rel if _rel else _raw
+    # [T-08] st.session_state.docs_others = _oth if _rel else []
+    # [T-08] st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
+    # [T-08] st.session_state.selected_id = None
+    # [T-08] st.session_state.last_doc    = None
+    # [T-08] st.session_state.last_detail = None
+    # [T-08] if _rel:
+    # [T-08] st.toast(f"✅ {len(_rel)}건 관련 기사 필터링 완료 (전체 {len(_raw)}건 중)")
+    # [T-08] except Exception as e:
+    # [T-08] st.error(f"오류: {e}")
+    # [T-08]
+    # [T-08] # 요약 캐시 초기화 버튼 (Gemini 재생성용)
+    # [T-08] if st.button(
+    # [T-08] "🤖 요약 캐시 초기화",
+    # [T-08] use_container_width=True, key="btn_clear_cache",
+    # [T-08] help="기존 규칙 기반 요약을 지우고 Gemini로 재생성합니다",
+    # [T-08] ):
+    # [T-08] fetch_detail.clear()
+    # [T-08] st.session_state.selected_id = None
+    # [T-08] st.session_state.last_doc    = None
+    # [T-08] st.session_state.last_detail = None
+    # [T-08] st.toast("✅ 요약 캐시 초기화 완료 — 기사 다시 클릭하면 Gemini로 재생성됩니다")
+    # [T-08] st.rerun()
+    # [T-08]
+    # [T-08] docs: list = st.session_state.docs
+    # [T-08] if not docs:
+    # [T-08] st.info("목록을 불러오는 중입니다...")
+    # [T-08] if docs:
+    # [T-08] months = sorted({d["issue_yyyymm"] for d in docs}, reverse=True)
+    # [T-08] sel_month = st.selectbox("월 필터", ["전체"] + months, key="month_filter")
+    # [T-08] kw = st.text_input("키워드 검색", placeholder="제목 내 검색", key="kw_search")
+    # [T-08]
+    # [T-08] filtered = [
+    # [T-08] d for d in docs
+    # [T-08] if (sel_month == "전체" or d["issue_yyyymm"] == sel_month)
+    # [T-08] and (not kw or kw in d["title"])
+    # [T-08] ]
+    # [T-08]
+    # [T-08] sort_order = st.selectbox("정렬", ["최신순", "오래된순"], key="sort_order")
+    # [T-08] fetched_at = st.session_state.get("docs_fetched_at", "")
+    # [T-08] if fetched_at:
+    # [T-08] st.caption(f"정렬: {sort_order} | 목록 기준: {fetched_at}(KST)")
+    # [T-08] else:
+    # [T-08] st.caption(f"{len(filtered)}건")
+    # [T-08]
+    # [T-08] if any(not d.get("issue_yyyymm") for d in filtered):
+    # [T-08] st.warning("일부 항목에 날짜 정보 없음")
+    # [T-08]
+    # [T-08] reverse = (sort_order == "최신순")
+    # [T-08] filtered = sorted(filtered, key=lambda d: d.get("issue_yyyymm", ""), reverse=reverse)
+    # [T-08]
+    # [T-08] st.divider()
+    # [T-08]
+    # [T-08] # 임팩트 스코어 일괄 산출
+    # [T-08] _scored_filtered = score_articles(filtered, _cur_ind, _MACRO)
+    # [T-08]
+    # [T-08] # 5-C: 빈 목록 방어
+    # [T-08] if not _scored_filtered:
+    # [T-08] st.info("선택한 필터 조건에 맞는 기사가 없습니다.")
+    # [T-08]
+    # [T-08] for d in _scored_filtered:
+    # [T-08] yyyymm   = d.get("issue_yyyymm", "")
+    # [T-08] date_tag = f"[{yyyymm[:4]}.{yyyymm[4:]}] " if len(yyyymm) == 6 else ""
+    # [T-08] _impact = d.get("impact_score", 1)
+    # [T-08] _stars = "★" * _impact
+    # [T-08] _label = f"📄 {date_tag}{_stars} {d['title'][:35]}{'...' if len(d['title']) > 35 else ''}"
+    # [T-08]
+    # [T-08] # 4~5점 기사: 노란 배경 하이라이트 배지
+    # [T-08] if _impact >= 4:
+    # [T-08] st.html(
+    # [T-08] f'<div style="background:#FFF3CD;border-radius:8px 8px 0 0;'
+    # [T-08] f'padding:4px 12px;margin-bottom:-8px;'
+    # [T-08] f'font-size:11px;font-weight:700;color:#856404">'
+    # [T-08] f'{"★" * _impact} 임팩트 {_impact}점</div>'
+    # [T-08] )
+    # [T-08]
+    # [T-08] btn_type = "primary" if _impact >= 4 else "secondary"
+    # [T-08] if st.button(
+    # [T-08] _label,
+    # [T-08] key=f"doc_{d['doc_id']}",
+    # [T-08] use_container_width=True,
+    # [T-08] type=btn_type,
+    # [T-08] ):
+    # [T-08] st.session_state.selected_id = d["doc_id"]
+    # [T-08] log_event("article_click", {"doc_id": d["doc_id"], "title": d["title"][:50]})
+    # [T-08]
+    # [T-08] _render_policy_summary(filtered)
+    # [T-08]
+    # [T-08] # 관련성 낮은 기사 접기 expander
+    # [T-08] _others = st.session_state.get("docs_others", [])
+    # [T-08] if _others:
+    # [T-08] with st.expander(f"기타 기사 {len(_others)}건 (관련성 낮음)"):
+    # [T-08] for _od in _others:
+    # [T-08] st.caption(f"📄 {_od['title'][:50]}")
+    # [T-08]
+    # [T-08] # ── 우: 문서 뷰어 ────────────────────────────
+    # [T-08] with col_r:
+    # [T-08] docs   = st.session_state.docs
+    # [T-08] sel_id = st.session_state.selected_id
+    # [T-08]
+    # [T-08] if not sel_id:
+    # [T-08] st.html(
+    # [T-08] '<div style="height:320px;display:flex;align-items:center;'
+    # [T-08] 'justify-content:center;border:2px dashed #e2e8f0;'
+    # [T-08] 'border-radius:12px;color:#94a3b8;font-size:1rem;background:#f8fafc">'
+    # [T-08] "← 왼쪽에서 문서를 선택하세요</div>"
+    # [T-08] )
+    # [T-08] else:
+    # [T-08] doc = next((d for d in docs if d["doc_id"] == sel_id), None)
+    # [T-08] if doc:
+    # [T-08] with st.spinner("본문 수집 중..."):
+    # [T-08] print(f"[app] fetch_detail 요청: doc_id={doc['doc_id']} url={doc['url'][:70]}")
+    # [T-08] detail = fetch_detail(doc["doc_id"], doc["url"], doc["title"], industry_key=_cur_ind)
+    # [T-08] print(f"[app] fetch_detail 결과: parse_status={detail.get('parse_status')} body_len={detail.get('body_len',0):,} summary_source={detail.get('summary_source','?')}")
+    # [T-08]
+    # [T-08] # ── LLM 재요약: 캐시에 저장된 "rule" 결과를 Groq 로 업그레이드 ──
+    # [T-08] # @st.cache_data 는 함수 반환값 전체를 캐시하므로,
+    # [T-08] # 이전에 Groq 키 없이 수집한 기사는 summary_source="rule" 로 캐시돼 있음.
+    # [T-08] # 지금 키가 있으면 본문만 꺼내서 LLM 재요약 (HTML 재수집 없이).
+    # [T-08] if (
+    # [T-08] detail.get("parse_status") == "success"
+    # [T-08] and detail.get("summary_source") == "rule"
+    # [T-08] and detail.get("body_text")
+    # [T-08] ):
+    # [T-08] try:
+    # [T-08] from core.summarizer import _get_llm_key, summarize_3line as _re_summarize
+    # [T-08] if _get_llm_key():
+    # [T-08] print("[app] 🔄 캐시된 rule 요약 → Groq 재요약 시도")
+    # [T-08] _new_sum, _new_src = _re_summarize(
+    # [T-08] detail["body_text"],
+    # [T-08] title=doc.get("title", ""),
+    # [T-08] industry_key=_cur_ind,
+    # [T-08] )
+    # [T-08] if _new_src == "groq":
+    # [T-08] detail = {
+    # [T-08] **detail,
+    # [T-08] "summary_3lines":  _new_sum,
+    # [T-08] "summary_source":  "groq",
+    # [T-08] }
+    # [T-08] print(f"[app] ✅ Groq 재요약 완료 ({len(_new_sum)}자)")
+    # [T-08] except Exception as _re_err:
+    # [T-08] print(f"[app] ⚠️  재요약 오류 (무시): {_re_err}")
+    # [T-08]
+    # [T-08] st.session_state.last_doc    = doc
+    # [T-08] st.session_state.last_detail = detail
+    # [T-08]
+    # [T-08] with st.container(border=True):
+    # [T-08] st.markdown(f"### {doc['title']}")
+    # [T-08] _status_label = {
+    # [T-08] "success": "✅ 성공",
+    # [T-08] "short":   "⚠️ 본문 짧음",
+    # [T-08] "fail":    "❌ 수집 실패",
+    # [T-08] }.get(detail.get("parse_status", "fail"),
+    # [T-08] detail.get("parse_status", ""))
+    # [T-08] st.caption(
+    # [T-08] f"발행: {doc['issue_yyyymm']} &nbsp;|&nbsp; "
+    # [T-08] f"본문: {detail['body_len']:,}자 &nbsp;|&nbsp; "
+    # [T-08] f"상태: {_status_label}"
+    # [T-08] )
+    # [T-08] if doc.get("url"):
+    # [T-08] st.markdown(
+    # [T-08] f"**🔗 원문**: [{doc['url'][:70]}{'...' if len(doc['url'])>70 else ''}]({doc['url']})"
+    # [T-08] )
+    # [T-08] # URL 불일치 디버깅용: doc_id와 URL의 cidx 비교
+    # [T-08] cidx_in_id  = doc["doc_id"].split("_")[1] if "_" in doc["doc_id"] else ""
+    # [T-08] cidx_in_url = re.search(r"cidx=(\d+)", doc["url"])
+    # [T-08] if cidx_in_url and cidx_in_id and cidx_in_url.group(1) != cidx_in_id:
+    # [T-08] st.warning(
+    # [T-08] f"⚠️ doc_id({cidx_in_id})와 URL cidx({cidx_in_url.group(1)})가 다릅니다. "
+    # [T-08] f"fetch_detail이 올바른 URL을 사용하는지 확인하세요."
+    # [T-08] )
+    # [T-08]
+    # [T-08] with st.container(border=True):
+    # [T-08] st.markdown("**📝 3줄 요약** — 핵심 정책 · 주요 내용 · 영향·시사점")
+    # [T-08] _pstatus = detail.get("parse_status", "fail")
+    # [T-08] if _pstatus == "success" and detail.get("summary_3lines"):
+    # [T-08] _render_summary_3lines(
+    # [T-08] detail["summary_3lines"],
+    # [T-08] source=detail.get("summary_source", ""),
+    # [T-08] )
+    # [T-08] else:
+    # [T-08] _fail_reason = detail.get("fail_reason", "수집 실패")
+    # [T-08] st.warning(f"⚠️ 요약 생성 불가: {_fail_reason}")
+    # [T-08] st.markdown(
+    # [T-08] "**해결 방법:**  \n"
+    # [T-08] "- 📎 아래 **원문 링크**를 직접 클릭해 기사를 확인하세요.  \n"
+    # [T-08] "- 🔄 잠시 후 다시 클릭하면 성공할 수 있습니다.  \n"
+    # [T-08] "- 🌐 JavaScript 렌더링이 필요한 페이지는 브라우저에서 직접 열어보세요."
+    # [T-08] )
+    # [T-08]
+    # [T-08] if detail.get("keywords"):
+    # [T-08] badges = " ".join(
+    # [T-08] f'<span style="background:#e8f4fd;color:#1a6fa8;'
+    # [T-08] f'padding:2px 8px;border-radius:4px;margin:2px;'
+    # [T-08] f'font-size:0.82rem">{k}</span>'
+    # [T-08] for k in detail["keywords"]
+    # [T-08] )
+    # [T-08] st.html(badges)
+    # [T-08] st.markdown("")
+    # [T-08]
+    # [T-08] with st.expander("📄 본문 전체", expanded=False):
+    # [T-08] st.text_area(
+    # [T-08] "본문 전체", value=detail["body_text"], height=300,
+    # [T-08] disabled=True, label_visibility="collapsed",
+    # [T-08] key=f"body_{doc['doc_id']}",
+    # [T-08] )
+    # [T-08]
+    # [T-08] _render_policy_industry_impact(doc, _cur_ind)
+    # [T-08] _render_article_strategy_questions(doc, _cur_ind)
+    # [T-08] _render_policy_detail(doc, detail)
+    # [T-08] _render_strategy_questions(doc, detail)
+    # [T-08]
+    # [T-08] # ══ TAB 3: 리포트 ════════════════════════════════
+    # [T-08] with tab3:
+    # [T-08] # 선택 문서 JSON 다운로드 (TAB 2에서 이동)
+    # [T-08] _sel_doc    = st.session_state.get("last_doc")
+    # [T-08] _sel_detail = st.session_state.get("last_detail")
+    # [T-08] if _sel_doc and _sel_detail:
+    # [T-08] _full_json = json.dumps(
+    # [T-08] {**_sel_doc, **_sel_detail}, ensure_ascii=False, indent=2
+    # [T-08] )
+    # [T-08] st.download_button(
+    # [T-08] "⬇️ 선택 문서 JSON 다운로드",
+    # [T-08] data=_full_json.encode("utf-8"),
+    # [T-08] file_name=f"{_sel_doc['doc_id']}.json",
+    # [T-08] mime="application/json",
+    # [T-08] key="dl_selected_json",
+    # [T-08] use_container_width=True,
+    # [T-08] )
+    # [T-08]
+    # [T-08] _render_content_history()
+    # [T-08] _render_download_section(st.session_state.docs)
+    # [T-08] === 원본 탭 코드 끝 ===
 
 
 # ══════════════════════════════════════════════════════

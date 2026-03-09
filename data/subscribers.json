@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "updated_at": "2026-03-09 20:47:12",
+    "description": "B2B 구독자 관리 — 산업별 맞춤 이메일 발송 기반"
+  },
+  "subscribers": [
+    {
+      "id": "sub_001",
+      "company": "테스트기업",
+      "email": "msunkang70@gmail.com",
+      "industry": "반도체",
+      "plan": "free",
+      "active": true,
+      "created_at": "2026-03-09",
+      "preferences": {
+        "frequency": "monthly",
+        "include_macro": true,
+        "include_script": true,
+        "include_alert": true
+      }
+    }
+  ],
+  "plans": {
+    "free": {
+      "label": "무료 체험",
+      "max_industries": 1,
+      "features": [
+        "monthly_report",
+        "macro_indicators"
+      ],
+      "price_krw": 0
+    },
+    "basic": {
+      "label": "베이직",
+      "max_industries": 2,
+      "features": [
+        "monthly_report",
+        "macro_indicators",
+        "alert_email",
+        "extra_sources"
+      ],
+      "price_krw": 29000
+    },
+    "pro": {
+      "label": "프로",
+      "max_industries": 8,
+      "features": [
+        "monthly_report",
+        "macro_indicators",
+        "alert_email",
+        "extra_sources",
+        "custom_prompt",
+        "api_access"
+      ],
+      "price_krw": 79000
+    }
+  }
+}

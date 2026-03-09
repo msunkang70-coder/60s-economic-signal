@@ -1,0 +1,127 @@
+name: Monthly Economic Signal
+
+on:
+  # 매월 1일 09:00 KST (00:00 UTC) 자동 실행
+  schedule:
+    - cron: "0 0 1 * *"
+  # 수동 실행 — 특정 산업만 선택하거나 전체(all) 실행
+  workflow_dispatch:
+    inputs:
+      industry:
+        description: "산업 카테고리 (all=8개 전체 병렬)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - 반도체
+          - 자동차
+          - 화학
+          - 소비재
+          - 배터리
+          - 조선
+          - 철강
+          - 일반
+
+env:
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  # ──────────────────────────────────────────────────
+  # Job 1: 산업별 병렬 실행 (matrix)
+  # ──────────────────────────────────────────────────
+  run-signal:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        industry: [반도체, 자동차, 화학, 소비재, 배터리, 조선, 철강, 일반]
+      fail-fast: false
+
+    # 수동 실행에서 특정 산업만 선택한 경우 해당 산업만 실행
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.inputs.industry == 'all' ||
+      github.event.inputs.industry == matrix.industry
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate script for ${{ matrix.industry }}
+        env:
+          INDUSTRY: ${{ matrix.industry }}
+        run: python main.py
+
+      - name: Send script email
+        env:
+          INDUSTRY: ${{ matrix.industry }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+        run: python -m core.emailer
+
+      - name: Send to subscribers
+        env:
+          INDUSTRY: ${{ matrix.industry }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: |
+          python -c "
+          from core.emailer import send_to_subscribers
+          result = send_to_subscribers(industry='${{ matrix.industry }}')
+          print(f'Sent: {result[\"sent\"]}, Failed: {result[\"failed\"]}, Skipped: {result[\"skipped\"]}')
+          "
+
+      - name: Log pipeline result
+        if: always()
+        env:
+          INDUSTRY: ${{ matrix.industry }}
+        run: |
+          python -c "
+          from core.pipeline_notifier import log_pipeline_result
+          log_pipeline_result('${{ matrix.industry }}', '${{ job.status }}', 0)
+          "
+
+      - name: Upload output artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-${{ matrix.industry }}
+          path: outputs/
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────
+  # Job 2: 전체 완료 후 요약 알림
+  # ──────────────────────────────────────────────────
+  notify:
+    needs: run-signal
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send completion summary
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: python core/pipeline_notifier.py

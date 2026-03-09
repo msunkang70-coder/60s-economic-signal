@@ -41,7 +41,39 @@ from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Optional
 
+from core.industry_config import get_profile
+
 _ROOT = pathlib.Path(__file__).parent.parent
+
+# ─────────────────────────────────────────────────────────────
+# T-09: 대시보드 URL 설정 (Streamlit Cloud 배포 시 변경)
+# ─────────────────────────────────────────────────────────────
+_DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:8501").rstrip("/")
+
+# UTM 파라미터
+_UTM_PARAMS = "utm_source=email&utm_medium=newsletter&utm_campaign=monthly"
+
+
+# ─────────────────────────────────────────────────────────────
+# 0-1. 산업 설정 로드
+# ─────────────────────────────────────────────────────────────
+
+def _load_industry() -> tuple[str, dict]:
+    """환경변수 INDUSTRY → Streamlit Secrets 순으로 산업 키를 결정한다.
+
+    Returns:
+        (industry_key, profile_dict)
+    """
+    key = os.environ.get("INDUSTRY", "").strip()
+    if not key:
+        try:
+            import streamlit as st
+            key = (st.secrets.get("email") or {}).get("industry", "").strip()
+        except Exception:
+            pass
+    if not key:
+        key = "일반"
+    return key, get_profile(key)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -135,7 +167,8 @@ def _load_macro() -> dict:
     return {}
 
 
-def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
+def _build_html(script_text: str, macro: dict, issue_month: str,
+                 industry_label: str = "", industry_desc: str = "") -> str:
     """60초 스크립트 + 거시지표를 담은 HTML 이메일 본문을 생성한다."""
 
     # 거시지표 카드 HTML
@@ -227,16 +260,16 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
                 f'<div style="font-weight:700;color:#3a5fc8;'
                 f'margin:18px 0 6px;font-size:13px">{stripped}</div>'
             )
-        elif stripped.startswith("- 이슈 ") and ":" in stripped:
-            # ★ TASK-02: 이슈 배지 카드
-            m = _re.match(r"- 이슈 (\d+):\s*(.*)", stripped)
+        elif stripped.startswith("이슈") and ":" in stripped and not stripped.startswith("▶"):
+            # 이슈 배지 카드 (이슈N: 형식)
+            m = _re.match(r"이슈(\d+):\s*(.*)", stripped)
             if m:
                 script_html += _issue_badge(m.group(1), m.group(2))
             else:
                 script_html += f'<p style="margin:4px 0;line-height:1.8;color:#444">{stripped}</p>'
-        elif stripped.startswith("▶ 이슈 ") and "해석:" in stripped:
-            # ★ TASK-02: 이슈별 해석 헤더 카드
-            m = _re.match(r"▶ 이슈 (\d+) 해석:\s*(.*)", stripped)
+        elif stripped.startswith("▶이슈") and "해석:" in stripped:
+            # 이슈별 해석 헤더 카드 (▶이슈N 해석: 형식)
+            m = _re.match(r"▶이슈(\d+) 해석:\s*(.*)", stripped)
             if m:
                 script_html += _interp_header(m.group(1), m.group(2))
             else:
@@ -279,7 +312,7 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
     for _num, _title in _articles:
         _bi = int(_num) - 1
         _fg, _bg = _BADGE_COLORS[_bi] if _bi < len(_BADGE_COLORS) else ("#374151", "#f3f4f6")
-        _short_title = _title[:30] + "…" if len(_title) > 30 else _title
+        _short_title = _title
         _indicators = _match_indicators(_title)
         if _indicators:
             _pills = "".join(
@@ -295,6 +328,15 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
                 'color:#888;background:#e5e7eb;'
                 'border-radius:10px;padding:2px 8px;margin:2px 3px 2px 0">일반 경제동향</span>'
             )
+        # T-09: 기사 제목을 대시보드 앵커 링크로 연결
+        if _DASHBOARD_URL:
+            _title_html = (
+                f'<a href="{_DASHBOARD_URL}?article_id={_num}&{_UTM_PARAMS}" '
+                f'style="color:#1a202c;text-decoration:none;font-weight:600">'
+                f'{_short_title}</a>'
+            )
+        else:
+            _title_html = _short_title
         article_link_cards += (
             f'<div style="display:flex;align-items:flex-start;margin:8px 0;'
             f'padding:10px 14px;background:#fafafa;border:1px solid #e2e8f0;border-radius:8px">'
@@ -303,7 +345,7 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
             f'border-radius:50%;flex-shrink:0;margin-right:12px;margin-top:1px">{_num}</span>'
             f'<div style="flex:1;min-width:0">'
             f'<div style="font-size:13px;color:#1a202c;font-weight:600;'
-            f'margin-bottom:5px;line-height:1.5">{_short_title}</div>'
+            f'margin-bottom:5px;line-height:1.5">{_title_html}</div>'
             f'<div style="line-height:1.6">{_pills}</div>'
             f'</div>'
             f'</div>'
@@ -314,7 +356,7 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f5f7fa;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif">
 <div style="max-width:640px;margin:32px auto;background:#fff;border-radius:12px;
-            box-shadow:0 2px 16px rgba(0,0,0,.08);overflow:hidden">
+            box-shadow:0 2px 16px rgba(0,0,0,.08)">
 
   <!-- 헤더 -->
   <div style="background:#1a202c;padding:28px 32px">
@@ -322,10 +364,10 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
       MONTHLY ECONOMIC SIGNAL
     </div>
     <div style="font-size:22px;font-weight:900;color:#fff">
-      📊 60초 경제신호 — {issue_month}
+      📊 {f"[{industry_label}] " if industry_label else ""}60초 경제신호 — {issue_month}
     </div>
     <div style="font-size:12px;color:#a0aec0;margin-top:6px">
-      매월 KDI 나라경제 이슈를 60초로 요약합니다
+      {f"{industry_label} 수출기업을 위한 60초 경제 브리핑" if industry_label else "매월 KDI 나라경제 이슈를 60초로 요약합니다"}
     </div>
   </div>
 
@@ -359,6 +401,16 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
     </div>
   </div>
 
+  <!-- T-09: 대시보드 링크 -->
+  {"" if not _DASHBOARD_URL else f'''<div style="padding:20px 32px;text-align:center">
+    <a href="{_DASHBOARD_URL}?{_UTM_PARAMS}"
+       style="display:inline-block;padding:14px 32px;
+              background:#3a5fc8;color:#fff;font-weight:700;
+              font-size:14px;text-decoration:none;border-radius:8px">
+      📊 대시보드에서 상세 보기
+    </a>
+  </div>'''}
+
   <!-- 푸터 -->
   <div style="background:#f8fafc;padding:18px 32px;
               border-top:1px solid #e2e8f0;font-size:11px;color:#a0aec0">
@@ -371,10 +423,12 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
 </html>"""
 
 
-def _build_plain(script_text: str, macro: dict, issue_month: str) -> str:
+def _build_plain(script_text: str, macro: dict, issue_month: str,
+                  industry_label: str = "") -> str:
     """HTML을 지원하지 않는 클라이언트용 plaintext 본문."""
+    _prefix = f"[{industry_label}] " if industry_label else ""
     lines = [
-        f"[60초 경제신호 — {issue_month}]",
+        f"[{_prefix}60초 경제신호 — {issue_month}]",
         "=" * 50,
         "",
         "▶ 이번 달 주요 거시지표",
@@ -447,17 +501,26 @@ def send_script_email(
 
     macro = _load_macro()
 
+    # ── 산업 설정 ─────────────────────────────────────────
+    ind_key, ind_profile = _load_industry()
+    ind_label = ind_profile.get("label", "")
+    ind_desc  = ind_profile.get("description", "")
+
     # ── 이메일 조립 ─────────────────────────────────────────
     recipients = [r.strip() for r in cfg["recipients"].split(",") if r.strip()]
-    subject    = f"📊 [{issue_month}] 60초 경제신호"
+    _ind_tag   = f"[{ind_label}] " if ind_label and ind_key != "일반" else ""
+    subject    = f"📊 {_ind_tag}60초 경제신호 — {issue_month}"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = formataddr(("60초 경제신호", cfg["sender"]))
     msg["To"]      = ", ".join(recipients)
 
-    plain_body = _build_plain(script_text, macro, issue_month)
-    html_body  = _build_html(script_text, macro, issue_month)
+    plain_body = _build_plain(script_text, macro, issue_month,
+                               industry_label=ind_label if ind_key != "일반" else "")
+    html_body  = _build_html(script_text, macro, issue_month,
+                              industry_label=ind_label if ind_key != "일반" else "",
+                              industry_desc=ind_desc if ind_key != "일반" else "")
 
     msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body,  "html",  "utf-8"))
@@ -694,7 +757,7 @@ def _build_alert_html(alerts: list, macro: dict, sent_at: str) -> str:
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#fef2f2;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif">
 <div style="max-width:580px;margin:28px auto;background:#fff;border-radius:12px;
-            box-shadow:0 2px 16px rgba(239,68,68,.15);overflow:hidden">
+            box-shadow:0 2px 16px rgba(239,68,68,.15)">
 
   <!-- 헤더 -->
   <div style="background:#7f1d1d;padding:24px 28px">
@@ -902,6 +965,71 @@ def send_report_email(
         print(f"[report_email] ✗ 발송 실패: {e}")
         traceback.print_exc()
         return False
+
+
+# ─────────────────────────────────────────────────────────────
+# 6. B2B 구독자 기반 산업별 발송 (T-11)
+# ─────────────────────────────────────────────────────────────
+
+def send_to_subscribers(industry: Optional[str] = None) -> dict:
+    """
+    구독자 DB 기반으로 산업별 이메일을 발송한다.
+
+    Args:
+        industry: 특정 산업만 발송 (None이면 모든 산업 순차 발송)
+
+    Returns:
+        {"sent": int, "failed": int, "skipped": int, "details": [...]}
+    """
+    from core.subscription import get_industry_send_list
+
+    result = {"sent": 0, "failed": 0, "skipped": 0, "details": []}
+
+    cfg = _load_config()
+    if not cfg["sender"] or not cfg["password"]:
+        print("[subscriber] 이메일 설정(sender/password) 없음 — 발송 건너뜀")
+        result["details"].append("이메일 설정 없음")
+        return result
+
+    send_list = get_industry_send_list()
+    if industry:
+        send_list = {industry: send_list.get(industry, [])}
+
+    for ind, emails in send_list.items():
+        if not emails:
+            result["skipped"] += 1
+            result["details"].append(f"{ind}: 구독자 없음 — 건너뜀")
+            continue
+
+        # 산업 환경변수 임시 설정
+        prev_industry = os.environ.get("INDUSTRY", "")
+        prev_recipients = os.environ.get("EMAIL_RECIPIENTS", "")
+        try:
+            os.environ["INDUSTRY"] = ind
+            os.environ["EMAIL_RECIPIENTS"] = ",".join(emails)
+            ok = send_script_email()
+            if ok:
+                result["sent"] += len(emails)
+                result["details"].append(f"{ind}: {len(emails)}명 발송 완료")
+            else:
+                result["failed"] += len(emails)
+                result["details"].append(f"{ind}: 발송 실패")
+        except Exception as e:
+            result["failed"] += len(emails)
+            result["details"].append(f"{ind}: 오류 — {e}")
+        finally:
+            # 환경변수 복원
+            if prev_industry:
+                os.environ["INDUSTRY"] = prev_industry
+            elif "INDUSTRY" in os.environ:
+                del os.environ["INDUSTRY"]
+            if prev_recipients:
+                os.environ["EMAIL_RECIPIENTS"] = prev_recipients
+            elif "EMAIL_RECIPIENTS" in os.environ:
+                del os.environ["EMAIL_RECIPIENTS"]
+
+    print(f"[subscriber] 발송 결과: sent={result['sent']}, failed={result['failed']}, skipped={result['skipped']}")
+    return result
 
 
 # ─────────────────────────────────────────────────────────────

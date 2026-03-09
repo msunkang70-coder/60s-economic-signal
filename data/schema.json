@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "60sec_econ_signal Data Schema",
+  "description": "Phase 2 통합 데이터 스키마 — 거시지표, 기사, 스크립트, 피드백 전체 구조 정의",
+  "version": "2.0.0",
+  "updated_at": "2026-03-09",
+
+  "files": {
+
+    "data/macro.json": {
+      "description": "ECOS API 거시지표 (자동 갱신)",
+      "type": "object",
+      "example_key": "환율(원/$)",
+      "properties": {
+        "<indicator_name>": {
+          "type": "object",
+          "properties": {
+            "value":       { "type": "string", "description": "현재값", "example": "1476" },
+            "prev_value":  { "type": "string", "description": "이전값", "example": "1468" },
+            "unit":        { "type": "string", "description": "단위", "example": "원/$" },
+            "trend":       { "type": "string", "enum": ["▲", "▼", "→"], "description": "변동 방향" },
+            "as_of":       { "type": "string", "description": "기준일 (YYYY-MM-DD 또는 YYYY-MM)", "example": "2026-03-06" },
+            "note":        { "type": "string", "description": "변동 요약", "example": "전일 대비 8원 상승" },
+            "source_name": { "type": "string", "description": "출처명", "example": "한국은행 ECOS" },
+            "source_url":  { "type": "string", "description": "출처 URL" },
+            "frequency":   { "type": "string", "enum": ["일간", "월간", "비정기"], "description": "발표 주기" }
+          },
+          "required": ["value", "unit", "trend", "as_of"]
+        },
+        "_meta": {
+          "type": "object",
+          "properties": {
+            "refreshed_at": { "type": "string", "format": "date-time", "description": "마지막 갱신 시각" }
+          }
+        }
+      }
+    },
+
+    "data/content_db.json": {
+      "description": "콘텐츠 생성 이력",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "content_id":   { "type": "string", "description": "YYYYMMDD 형식 고유 ID", "example": "20260307" },
+          "date":         { "type": "string", "format": "date", "description": "생성일" },
+          "generated_at": { "type": "string", "description": "생성 시각 (YYYY-MM-DD HH:MM:SS)" },
+          "topic":        { "type": "string", "description": "주제", "example": "경제" },
+          "macro_data":   { "type": "string", "description": "macro.json 경로" },
+          "script_path":  { "type": "string", "description": "스크립트 파일 경로" },
+          "srt_path":     { "type": "string", "description": "SRT 자막 파일 경로" }
+        },
+        "required": ["content_id", "date", "generated_at"]
+      }
+    },
+
+    "data/score_history.json": {
+      "description": "산업별 임팩트 스코어 이력",
+      "type": "object",
+      "example_key": "반도체",
+      "properties": {
+        "<industry_key>": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ts":    { "type": "string", "format": "date-time", "description": "기록 시각" },
+              "score": { "type": "number", "description": "평균 임팩트 스코어 (1.0~5.0)" }
+            },
+            "required": ["ts", "score"]
+          }
+        }
+      }
+    },
+
+    "data/feedback.json": {
+      "description": "사용자 피드백 로그",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "timestamp": { "type": "string", "description": "피드백 시각" },
+          "industry":  { "type": "string", "description": "선택 산업" },
+          "would_use": { "type": "string", "enum": ["예", "아니오"], "description": "활용 의향" },
+          "free_text": { "type": "string", "description": "자유 의견" }
+        },
+        "required": ["timestamp", "industry"]
+      }
+    }
+  },
+
+  "phase2_additions": {
+
+    "indicators": {
+      "description": "거시지표 정규화 목록 — 기사 연결용",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id":                  { "type": "string", "description": "지표 고유 ID (snake_case)", "example": "usd_krw" },
+          "label":               { "type": "string", "description": "표시 이름", "example": "환율(원/$)" },
+          "unit":                { "type": "string", "example": "원/$" },
+          "category":            { "type": "string", "enum": ["환율", "물가", "수출", "금리"], "description": "지표 카테고리" },
+          "related_article_ids": { "type": "array", "items": { "type": "integer" }, "description": "연관 기사 ID 목록" }
+        },
+        "required": ["id", "label", "category", "related_article_ids"]
+      },
+      "default": [
+        { "id": "usd_krw",          "label": "환율(원/$)",     "unit": "원/$",     "category": "환율", "related_article_ids": [] },
+        { "id": "cpi",              "label": "소비자물가(CPI)", "unit": "%",        "category": "물가", "related_article_ids": [] },
+        { "id": "export_growth",    "label": "수출증가율",      "unit": "%",        "category": "수출", "related_article_ids": [] },
+        { "id": "base_rate",        "label": "기준금리",        "unit": "%",        "category": "금리", "related_article_ids": [] },
+        { "id": "jpy_krw",          "label": "원/100엔 환율",   "unit": "원/100엔", "category": "환율", "related_article_ids": [] },
+        { "id": "export_price_idx", "label": "수출물가지수",    "unit": "%",        "category": "물가", "related_article_ids": [] },
+        { "id": "import_price_idx", "label": "수입물가지수",    "unit": "%",        "category": "물가", "related_article_ids": [] }
+      ]
+    },
+
+    "articles": {
+      "description": "기사 정규화 목록 — 지표 연결 + 스크립트 구조화",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id":                     { "type": "integer", "description": "기사 순번 (1-indexed)" },
+          "title":                  { "type": "string", "description": "기사 제목" },
+          "url":                    { "type": "string", "format": "uri", "description": "기사 URL" },
+          "source":                 { "type": "string", "description": "출처", "example": "KDI 나라경제" },
+          "published_month":        { "type": "string", "description": "게재 월 (YYYY-MM)" },
+          "impact_score":           { "type": "integer", "minimum": 1, "maximum": 5, "description": "임팩트 스코어" },
+          "related_indicator_ids":  { "type": "array", "items": { "type": "string" }, "description": "연관 지표 ID 목록" },
+          "script": {
+            "type": "object",
+            "description": "60초 스크립트 구조화 데이터",
+            "properties": {
+              "hook":        { "type": "string", "description": "[0~5초] 훅 문장" },
+              "issues":      { "type": "array", "items": { "type": "string" }, "minItems": 3, "maxItems": 3, "description": "[5~25초] 이슈 3건" },
+              "insights":    { "type": "array", "items": { "type": "string" }, "minItems": 3, "maxItems": 3, "description": "[25~45초] 해석 3건" },
+              "implication": { "type": "string", "description": "[45~60초] 시사점" }
+            },
+            "required": ["hook", "issues", "insights", "implication"]
+          }
+        },
+        "required": ["id", "title", "url", "related_indicator_ids", "script"]
+      }
+    }
+  }
+}
