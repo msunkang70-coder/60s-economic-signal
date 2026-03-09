@@ -38,9 +38,45 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr
 from typing import Optional
 
 _ROOT = pathlib.Path(__file__).parent.parent
+
+
+# ─────────────────────────────────────────────────────────────
+# 0. 기사 ↔ 거시지표 키워드 매핑
+# ─────────────────────────────────────────────────────────────
+
+_INDICATOR_KEYWORDS: dict[str, list[str]] = {
+    "환율": ["환율", "달러", "원화", "외환"],
+    "소비자물가(CPI)": ["물가", "CPI", "인플레", "소비자"],
+    "기준금리": ["금리", "한국은행", "통화정책", "기준금리"],
+    "수출증가율": ["수출", "무역", "교역", "수출입"],
+    "코스피": ["코스피", "주가", "주식", "증시", "상장", "코스닥"],
+    "수입물가지수": ["수입", "원자재", "원가"],
+    "원/100엔 환율": ["엔화", "일본", "엔저", "엔고"],
+    "GDP성장률": ["성장률", "GDP", "경제성장", "성장"],
+}
+
+
+def _match_indicators(title: str) -> list[str]:
+    """기사 제목에서 관련 거시지표 이름 목록을 반환한다.
+
+    Args:
+        title: 기사 제목 문자열
+
+    Returns:
+        매칭된 지표 이름 리스트. 매칭 없으면 빈 리스트.
+    """
+    matched = []
+    for indicator, keywords in _INDICATOR_KEYWORDS.items():
+        for kw in keywords:
+            if kw in title:
+                matched.append(indicator)
+                break  # 해당 지표는 한 번만 추가
+    return matched
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -103,10 +139,36 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
     """60초 스크립트 + 거시지표를 담은 HTML 이메일 본문을 생성한다."""
 
     # 거시지표 카드 HTML
+    _now = datetime.now()
+
+    def _as_of_style(as_of_str: str) -> tuple:
+        """as_of 문자열을 파싱해 (색상, 추가레이블) 반환.
+
+        기준: 현재 날짜보다 1개월 초과 과거 → 오래된 데이터(orange + 경고 레이블).
+        1개월 이내 → 최신(green). 파싱 불가 → gray, 레이블 없음.
+        """
+        if not as_of_str:
+            return "#aaa", ""
+        try:
+            # "YYYY-MM-DD" 또는 "YYYY-MM" 형식 모두 지원
+            if len(as_of_str) == 7:
+                as_of_dt = datetime.strptime(as_of_str, "%Y-%m")
+            else:
+                as_of_dt = datetime.strptime(as_of_str[:10], "%Y-%m-%d")
+            # 월 단위 차이 계산
+            months_diff = (_now.year - as_of_dt.year) * 12 + (_now.month - as_of_dt.month)
+            if months_diff > 1:
+                return "#f97316", " &nbsp;<span style=\"font-size:9px;color:#f97316\">⚠ 최근 미발표</span>"
+            else:
+                return "#2d9b4e", ""
+        except (ValueError, TypeError):
+            return "#aaa", ""
+
     macro_cards = ""
     for label, d in macro.items():
         trend = d.get("trend", "")
         trend_color = "#e53e3e" if trend == "▲" else ("#2d9b4e" if trend == "▼" else "#888")
+        as_of_color, as_of_extra = _as_of_style(d.get("as_of", ""))
         macro_cards += f"""
         <div style="display:inline-block;min-width:160px;margin:6px;
                     padding:16px 20px;border:1px solid #e2e8f0;
@@ -117,8 +179,41 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
             <span style="font-size:14px;color:{trend_color}">{trend}</span>
           </div>
           <div style="font-size:11px;color:#666;margin-top:4px">{d.get("note","")}</div>
-          <div style="font-size:10px;color:#aaa;margin-top:4px">기준일: {d.get("as_of","")}</div>
+          <div style="font-size:10px;color:{as_of_color};margin-top:4px">기준일: {d.get("as_of","")}{as_of_extra}</div>
         </div>"""
+
+    # 이슈 번호별 배지 색상 (TASK-02)
+    _ISSUE_COLORS = {
+        "1": ("#1e40af", "#dbeafe"),
+        "2": ("#065f46", "#d1fae5"),
+        "3": ("#7c2d12", "#ffedd5"),
+    }
+
+    def _issue_badge(num: str, content: str) -> str:
+        fg, bg = _ISSUE_COLORS.get(num, ("#374151", "#f3f4f6"))
+        return (
+            f'<div style="display:flex;align-items:flex-start;margin:5px 0;'
+            f'padding:8px 12px;background:{bg};border-radius:6px">'
+            f'<span style="min-width:44px;font-size:11px;font-weight:700;color:#fff;'
+            f'background:{fg};border-radius:4px;padding:2px 7px;'
+            f'margin-right:10px;flex-shrink:0;line-height:1.6">이슈 {num}</span>'
+            f'<span style="font-size:13px;color:#1a202c;line-height:1.7">{content}</span>'
+            f'</div>'
+        )
+
+    def _interp_header(num: str, content: str) -> str:
+        fg, bg = _ISSUE_COLORS.get(num, ("#374151", "#f3f4f6"))
+        return (
+            f'<div style="margin:10px 0 3px;padding:5px 12px;'
+            f'background:{fg};border-radius:4px 4px 0 0;display:inline-block">'
+            f'<span style="font-size:11px;font-weight:700;color:#fff">'
+            f'▶ 이슈 {num} 해석</span></div>'
+            f'<div style="margin:0 0 8px;padding:8px 12px;'
+            f'background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 4px 4px 4px;'
+            f'font-size:13px;color:#374151;line-height:1.7">{content}</div>'
+        )
+
+    import re as _re
 
     # 스크립트 본문을 HTML로 변환 (줄바꿈 → <br>)
     script_html = ""
@@ -132,6 +227,20 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
                 f'<div style="font-weight:700;color:#3a5fc8;'
                 f'margin:18px 0 6px;font-size:13px">{stripped}</div>'
             )
+        elif stripped.startswith("- 이슈 ") and ":" in stripped:
+            # ★ TASK-02: 이슈 배지 카드
+            m = _re.match(r"- 이슈 (\d+):\s*(.*)", stripped)
+            if m:
+                script_html += _issue_badge(m.group(1), m.group(2))
+            else:
+                script_html += f'<p style="margin:4px 0;line-height:1.8;color:#444">{stripped}</p>'
+        elif stripped.startswith("▶ 이슈 ") and "해석:" in stripped:
+            # ★ TASK-02: 이슈별 해석 헤더 카드
+            m = _re.match(r"▶ 이슈 (\d+) 해석:\s*(.*)", stripped)
+            if m:
+                script_html += _interp_header(m.group(1), m.group(2))
+            else:
+                script_html += f'<p style="margin:4px 0;line-height:1.8;color:#444">{stripped}</p>'
         elif stripped.startswith("※"):
             # 참고 기사 이후 — 별도 처리
             script_html += f'<div style="color:#aaa;font-size:11px">{stripped}</div>'
@@ -139,6 +248,66 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
             script_html += '<hr style="border:none;border-top:1px solid #e2e8f0;margin:10px 0">'
         else:
             script_html += f'<p style="margin:4px 0;line-height:1.8;color:#444">{stripped}</p>'
+
+
+    # ── TASK-04: 기사 ↔ 지표 연결 — ※ 참고 기사 목록 파싱 ───────────────
+    import re as _re2
+    _articles: list[tuple[str, str]] = []  # [(num, title), ...]
+    _in_refs = False
+    for _line in script_text.splitlines():
+        _s = _line.strip()
+        if _s.startswith("※ 참고 기사 목록"):
+            _in_refs = True
+            continue
+        if _in_refs:
+            _m = _re2.match(r"\[(\d+)\]\s*(.+)", _s)
+            if _m:
+                _articles.append((_m.group(1), _m.group(2).strip()))
+            elif _s.startswith("http") or not _s:
+                continue
+            elif _s and not _s.startswith("["):
+                break  # 다른 섹션 시작
+
+    # 기사 카드 HTML 생성
+    _BADGE_COLORS = [
+        ("#1e40af", "#dbeafe"),
+        ("#065f46", "#d1fae5"),
+        ("#7c2d12", "#ffedd5"),
+    ]
+    _INDICATOR_PILL_COLOR = "#3a5fc8"
+    article_link_cards = ""
+    for _num, _title in _articles:
+        _bi = int(_num) - 1
+        _fg, _bg = _BADGE_COLORS[_bi] if _bi < len(_BADGE_COLORS) else ("#374151", "#f3f4f6")
+        _short_title = _title[:30] + "…" if len(_title) > 30 else _title
+        _indicators = _match_indicators(_title)
+        if _indicators:
+            _pills = "".join(
+                f'<span style="display:inline-block;font-size:10px;font-weight:600;'
+                f'color:#fff;background:{_INDICATOR_PILL_COLOR};'
+                f'border-radius:10px;padding:2px 8px;margin:2px 3px 2px 0;'
+                f'white-space:nowrap">{_ind}</span>'
+                for _ind in _indicators
+            )
+        else:
+            _pills = (
+                '<span style="display:inline-block;font-size:10px;font-weight:600;'
+                'color:#888;background:#e5e7eb;'
+                'border-radius:10px;padding:2px 8px;margin:2px 3px 2px 0">일반 경제동향</span>'
+            )
+        article_link_cards += (
+            f'<div style="display:flex;align-items:flex-start;margin:8px 0;'
+            f'padding:10px 14px;background:#fafafa;border:1px solid #e2e8f0;border-radius:8px">'
+            f'<span style="min-width:28px;height:28px;line-height:28px;text-align:center;'
+            f'font-size:12px;font-weight:800;color:#fff;background:{_fg};'
+            f'border-radius:50%;flex-shrink:0;margin-right:12px;margin-top:1px">{_num}</span>'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="font-size:13px;color:#1a202c;font-weight:600;'
+            f'margin-bottom:5px;line-height:1.5">{_short_title}</div>'
+            f'<div style="line-height:1.6">{_pills}</div>'
+            f'</div>'
+            f'</div>'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -165,7 +334,18 @@ def _build_html(script_text: str, macro: dict, issue_month: str) -> str:
     <div style="font-size:13px;font-weight:700;color:#1a202c;margin-bottom:12px">
       📈 이번 달 주요 거시지표
     </div>
+    <div style="font-size:11px;color:#888;margin-bottom:8px">
+      ※ 일부 지표는 통계 특성상 최근 2~3개월 데이터가 최신입니다.
+    </div>
     <div>{macro_cards}</div>
+  </div>
+
+  <!-- 기사 ↔ 지표 연결 -->
+  <div style="padding:20px 32px;border-bottom:1px solid #e2e8f0">
+    <div style="font-size:13px;font-weight:700;color:#1a202c;margin-bottom:12px">
+      🔗 기사 ↔ 지표 연결
+    </div>
+    <div>{article_link_cards}</div>
   </div>
 
   <!-- 60초 스크립트 -->
@@ -273,7 +453,7 @@ def send_script_email(
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = cfg["sender"]
+    msg["From"]    = formataddr(("60초 경제신호", cfg["sender"]))
     msg["To"]      = ", ".join(recipients)
 
     plain_body = _build_plain(script_text, macro, issue_month)
@@ -282,23 +462,42 @@ def send_script_email(
     msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body,  "html",  "utf-8"))
 
-    # SRT 파일 첨부 (옵션)
-    if attach_srt and srt_p.exists():
+    # 첨부파일명 생성 (YYYYMM 형식)
+    year_month   = datetime.now().strftime("%Y%m")
+    txt_filename = f"60sec_econ_signal_{year_month}.txt"
+    srt_filename = f"60sec_econ_signal_{year_month}.srt"
+
+    # TXT / SRT 첨부가 하나라도 있으면 mixed 구조로 전환
+    has_srt = attach_srt and srt_p.exists()
+    if script_p.exists() or has_srt:
         outer = MIMEMultipart("mixed")
         outer["Subject"] = msg["Subject"]
         outer["From"]    = msg["From"]
         outer["To"]      = msg["To"]
         outer.attach(msg)   # alternative 파트 포함
 
-        with open(srt_p, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header(
+        # TXT 스크립트 첨부
+        txt_part = MIMEBase("text", "plain", charset="utf-8")
+        txt_part.set_payload(script_p.read_bytes())
+        encoders.encode_base64(txt_part)
+        txt_part.add_header(
             "Content-Disposition",
-            f'attachment; filename="{issue_month.replace(" ", "_")}_경제신호.srt"',
+            f'attachment; filename="{txt_filename}"',
         )
-        outer.attach(part)
+        outer.attach(txt_part)
+
+        # SRT 자막 첨부 (옵션)
+        if has_srt:
+            with open(srt_p, "rb") as f:
+                srt_part = MIMEBase("application", "octet-stream")
+                srt_part.set_payload(f.read())
+            encoders.encode_base64(srt_part)
+            srt_part.add_header(
+                "Content-Disposition",
+                f'attachment; filename="{srt_filename}"',
+            )
+            outer.attach(srt_part)
+
         msg = outer
 
     # ── SMTP 발송 ───────────────────────────────────────────
@@ -574,7 +773,7 @@ def send_alert_email(macro: "Optional[dict]" = None) -> bool:
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = cfg["sender"]
+    msg["From"]    = formataddr(("60초 경제신호", cfg["sender"]))
     msg["To"]      = ", ".join(recipients)
 
     # ── plain text ─────────────────────────────────────────
@@ -627,6 +826,80 @@ def send_alert_email(macro: "Optional[dict]" = None) -> bool:
         return False
     except Exception as e:
         print(f"[alert] ✗ 발송 실패: {e}")
+        traceback.print_exc()
+        return False
+
+
+# ─────────────────────────────────────────────────────────────
+# 5. 대시보드 리포트 이메일 발송
+# ─────────────────────────────────────────────────────────────
+
+def send_report_email(
+    html_body: str,
+    subject: str,
+    extra_recipients: Optional[list] = None,
+) -> bool:
+    """
+    대시보드에서 생성한 HTML 리포트를 이메일로 발송한다.
+
+    Args:
+        html_body:        generate_report_html() 반환 HTML 문자열
+        subject:          이메일 제목
+        extra_recipients: 기본 수신자 외 추가 수신자 목록 (선택)
+
+    Returns:
+        True  — 발송 성공
+        False — 설정 없음 또는 발송 실패
+    """
+    if not is_configured():
+        print("[report_email] 이메일 설정 없음 — 발송 건너뜀")
+        return False
+
+    cfg = _load_config()
+    base_recipients = [r.strip() for r in cfg["recipients"].split(",") if r.strip()]
+    extra = [r.strip() for r in (extra_recipients or []) if r.strip()]
+    # 중복 제거하면서 순서 유지
+    seen: set = set()
+    recipients: list = []
+    for r in base_recipients + extra:
+        if r not in seen:
+            seen.add(r)
+            recipients.append(r)
+
+    if not recipients:
+        print("[report_email] 수신자 없음 — 발송 건너뜀")
+        return False
+
+    # ── 간단한 plaintext fallback ────────────────────
+    plain_body = (
+        f"[대시보드 리포트]\n"
+        f"HTML 형식 이메일입니다. HTML을 지원하는 메일 클라이언트에서 확인하세요.\n\n"
+        f"발송일: {datetime.now().strftime('%Y-%m-%d %H:%M')} KST"
+    )
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = formataddr(("60초 경제신호", cfg["sender"]))
+    msg["To"]      = ", ".join(recipients)
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
+
+    try:
+        print(f"[report_email] SMTP 연결 중: {cfg['smtp_host']}:{cfg['smtp_port']}")
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"], timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(cfg["sender"], cfg["password"])
+            server.sendmail(cfg["sender"], recipients, msg.as_bytes())
+        print(f"[report_email] ✓ 발송 완료 → {', '.join(recipients)}")
+        return True
+
+    except smtplib.SMTPAuthenticationError:
+        print("[report_email] ✗ 인증 실패 — Gmail 앱 비밀번호를 확인하세요.")
+        return False
+    except Exception as e:
+        print(f"[report_email] ✗ 발송 실패: {e}")
         traceback.print_exc()
         return False
 

@@ -2836,6 +2836,62 @@ def render_ui() -> None:
                 </div>
                 """)
 
+        # ── 리포트 이메일 발송 ─────────────────────────
+        st.markdown("---")
+        st.markdown("### 📧 리포트 이메일 발송")
+        try:
+            from core.emailer import is_configured as _email_ok, send_report_email as _send_report
+            _email_configured = _email_ok()
+        except Exception:
+            _email_configured = False
+
+        if _email_configured:
+            # 기본 수신자 표시
+            try:
+                _default_recip = st.secrets.get("email", {}).get("recipients", "")
+            except Exception:
+                _default_recip = ""
+            if _default_recip:
+                st.caption(f"기본 수신자: {_default_recip}")
+
+            _extra_recip = st.text_input(
+                "추가 수신자 (선택)",
+                placeholder="추가@example.com (쉼표로 구분)",
+                key="email_extra_recipients",
+            )
+
+            _docs_for_email   = st.session_state.get("docs", [])
+            _doc_for_email    = st.session_state.get("last_doc")
+            _detail_for_email = st.session_state.get("last_detail")
+            _btn_disabled = not bool(_docs_for_email)
+
+            if st.button(
+                "📧 리포트 발송",
+                use_container_width=True,
+                disabled=_btn_disabled,
+                help="정책브리핑 탭에서 기사를 로드하세요" if _btn_disabled else "현재 대시보드 리포트를 이메일로 발송",
+                key="btn_send_report_email",
+            ):
+                with st.spinner("이메일 발송 중..."):
+                    try:
+                        _html = generate_report_html(_docs_for_email, _doc_for_email, _detail_for_email)
+                        _profile_label = get_profile(_sel_ind).get("label", _sel_ind)
+                        _subject = (
+                            f"[{_date.today().strftime('%Y-%m-%d')}] "
+                            f"{_profile_label} 경제신호 리포트"
+                        )
+                        _extra = [r.strip() for r in _extra_recip.split(",") if r.strip()] if _extra_recip else []
+                        _ok = _send_report(_html, _subject, extra_recipients=_extra)
+                        if _ok:
+                            st.toast("✅ 이메일 발송 완료!")
+                            log_event("report_email_sent", {"industry": _sel_ind})
+                        else:
+                            st.error("발송 실패 — 이메일 설정을 확인하세요")
+                    except Exception as _e:
+                        st.error(f"발송 오류: {_e}")
+        else:
+            st.caption("이메일 미설정 — secrets.toml [email] 섹션을 확인하세요")
+
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
 

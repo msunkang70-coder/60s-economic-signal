@@ -724,9 +724,20 @@ def _split_sentences_full(text: str) -> list:
     """
     ★ MODIFIED v2: 텍스트를 문장 단위로 분리한다.
     15~250자 범위의 문장만 반환. FACT PACK 구성에 사용.
+    ★ TASK-01: 줄임표 제거 — 소스 텍스트에 포함된 말줄임 처리
     """
     raw = re.split(r"(?<=[.?!다요])\s+|\n", text)
-    return [s.strip() for s in raw if 15 <= len(s.strip()) <= 250]
+    result = []
+    for s in raw:
+        s = s.strip()
+        if not s:
+            continue
+        # 문장 끝 줄임표 제거 (소스 텍스트의 말줄임 처리)
+        s = re.sub(r"\s*[…]+\s*$", "", s).strip()
+        s = re.sub(r"\.{2,}\s*$", ".", s).strip()
+        if 15 <= len(s) <= 250:
+            result.append(s)
+    return result
 
 
 def _score_sentence_standalone(sent: str, title_words: set) -> float:
@@ -848,6 +859,8 @@ def build_fact_pack(text: str, title: str = "") -> dict:
 def _build_issue_sentence(fact_pack: dict, index: int) -> str:
     """
     ★ MODIFIED v2: FACT PACK에서 핵심 이슈 문장 1개를 구성한다.
+    ★ TASK-01: 줄임표 안전 제거 추가
+    ★ TASK-02: 마커 형식을 "- 이슈 N:" 으로 변경 (이슈별 명시적 구분)
 
     우선순위:
       1) key_facts  수치 포함 완전 문장
@@ -856,19 +869,25 @@ def _build_issue_sentence(fact_pack: dict, index: int) -> str:
 
     규칙: 줄임표("…") 절대 금지. 완전한 문장만 반환.
     """
-    marker = ["①", "②", "③"][index]
+    marker = f"- 이슈 {index + 1}"
+
+    def _clean(s: str) -> str:
+        """줄임표 안전 제거."""
+        s = re.sub(r"\s*…+", "", s)
+        s = re.sub(r"\.{3,}", ".", s)
+        return s.strip()
 
     # 1순위: 수치 포함 핵심 사실
     if fact_pack.get("key_facts"):
-        return f"{marker} {fact_pack['key_facts'][0]}"
+        return f"{marker}: {_clean(fact_pack['key_facts'][0])}"
 
     # 2순위: 경제 고득점 이슈
     if fact_pack.get("key_issues"):
-        return f"{marker} {fact_pack['key_issues'][0]}"
+        return f"{marker}: {_clean(fact_pack['key_issues'][0])}"
 
     # 폴백: 수치 없음 명시 (수치 정보 없다고 명확히 고지)
     title_hint = (fact_pack.get("title") or "해당 기사")[:20]
-    return f"{marker} [{title_hint}] 수치 정보는 기사에 제한적입니다."
+    return f"{marker}: [{title_hint}] 수치 정보는 기사에 제한적입니다."
 
 
 def _build_interpretation_v2(fp0: dict, fp1: dict) -> tuple:
@@ -912,6 +931,49 @@ def _build_interpretation_v2(fp0: dict, fp1: dict) -> tuple:
         interp2 = f"반면 {raw2}"
 
     return interp1, interp2
+
+
+def _build_issue_interpretation(fp: dict, issue_num: int) -> str:
+    """
+    ★ TASK-02: FACT PACK 기반 이슈별 해석 블록 1개를 구성한다.
+
+    Returns:
+        "▶ 이슈 N 해석: {문장1} {문장2}"
+    """
+    _CONJ_START = (
+        "이", "그", "이는", "또한", "하지만", "따라서",
+        "그러나", "특히", "우리", "현재", "이에", "이와",
+    )
+
+    # 문장 1: 리스크 또는 확정 사실 (원인 프레임)
+    raw1 = (
+        fp.get("risk")
+        or (fp["confirmed"][0] if fp.get("confirmed") else "")
+        or (fp["key_issues"][0] if fp.get("key_issues") else "")
+    )
+    if not raw1:
+        s1 = "현재 경제 지표들은 복합적인 방향성을 보이고 있습니다."
+    elif any(raw1.startswith(c) for c in _CONJ_START):
+        s1 = raw1
+    else:
+        s1 = f"이는 {raw1}"
+
+    # 문장 2: 기회 또는 추가 이슈 (결과 프레임)
+    raw2 = (
+        fp.get("opportunity")
+        or (fp["confirmed"][1] if len(fp.get("confirmed", [])) > 1 else "")
+        or (fp["key_issues"][1] if len(fp.get("key_issues", [])) > 1 else "")
+        or (fp["key_issues"][0] if fp.get("key_issues") else "")
+    )
+    if not raw2 or raw2 == raw1:
+        s2 = ""
+    elif any(raw2.startswith(c) for c in _CONJ_START):
+        s2 = raw2
+    else:
+        s2 = f"또한 {raw2}"
+
+    body = f"{s1} {s2}".strip() if s2 else s1
+    return f"▶ 이슈 {issue_num} 해석: {body}"
 
 
 def _build_implications_v2(fp2: dict) -> tuple:
@@ -986,16 +1048,20 @@ def _validate_script(script: str) -> tuple:
     if not sections.get("hook", "").strip():
         problems.append("훅 섹션 비어 있음")
 
-    # 3) 핵심 이슈 ①②③ 모두 포함
+    # 3) 핵심 이슈 이슈 1/2/3 모두 포함 (★ TASK-02: ①②③ → - 이슈 N: 형식)
     issues_text = sections.get("issues", "")
-    for marker in ["①", "②", "③"]:
-        if marker not in issues_text:
-            problems.append(f"핵심 이슈에 {marker} 없음")
+    for i in [1, 2, 3]:
+        if f"이슈 {i}:" not in issues_text:
+            problems.append(f"핵심 이슈에 이슈 {i} 없음")
 
-    # 4) 해석 최소 2줄
-    interp_lines = [ln for ln in sections.get("interp", "").split("\n") if ln.strip()]
-    if len(interp_lines) < 2:
-        problems.append(f"해석 문장 수 부족 ({len(interp_lines)}줄, 최소 2줄)")
+    # 4) 해석 이슈별 블록 3개 포함 (★ TASK-02)
+    interp_text = sections.get("interp", "")
+    for i in [1, 2, 3]:
+        if f"이슈 {i} 해석" not in interp_text:
+            problems.append(f"해석에 이슈 {i} 블록 없음")
+    interp_lines = [ln for ln in interp_text.split("\n") if ln.strip()]
+    if len(interp_lines) < 3:
+        problems.append(f"해석 블록 수 부족 ({len(interp_lines)}줄, 최소 3줄)")
 
     # 5) 시사점 최소 2줄
     impl_lines = [ln for ln in sections.get("impl", "").split("\n") if ln.strip()]
@@ -1125,7 +1191,10 @@ def generate_shorts_script(
     issue2 = _build_issue_sentence(fp1, 1)
     issue3 = _build_issue_sentence(fp2, 2)
 
-    interp1, interp2 = _build_interpretation_v2(fp0, fp1)
+    # ★ TASK-02: 이슈별 해석 블록 3개 생성 (기존 2문장 혼합 → 이슈별 분리)
+    interp_block1 = _build_issue_interpretation(fp0, 1)
+    interp_block2 = _build_issue_interpretation(fp1, 2)
+    interp_block3 = _build_issue_interpretation(fp2, 3)
     personal, corp = _build_implications_v2(fp2)
 
     # ── 강도(intensity) 어구 추가 ───────────────────────────
@@ -1137,7 +1206,7 @@ def generate_shorts_script(
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     intensity_label = ["", "보수적", "신중", "중립", "적극적", "공격적"][intensity]
 
-    interp_block = f"{interp1}\n{interp2}"
+    interp_block = f"{interp_block1}\n{interp_block2}\n{interp_block3}"
     if interp_note:
         interp_block += f"\n{interp_note}"
 
