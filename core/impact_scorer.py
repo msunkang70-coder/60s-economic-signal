@@ -180,3 +180,356 @@ def calculate_impact_score(
 ) -> int:
     """기존 호출 호환용 래퍼."""
     return score_article(article, industry_key, macro_data)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 거시경제 임팩트 스코어 (Macro Trend Impact Score)
+# ── 기사 채점과 완전히 분리된 독립 모듈 ──────────────────────────────────────
+# 설계 원칙:
+#   - raw value가 아닌 trend(▲/▼/→)로 정규화 (단위 불일치 문제 해소)
+#   - 각 지표의 수출기업 방향성(긍정/부정)을 DIRECTION dict로 명시
+#   - 기존 macro_weights 재사용 (새 설정 불필요)
+#   - 결과 범위: -3.0 ~ +3.0 (0=중립, +3=매우 우호적, -3=매우 불리)
+# ════════════════════════════════════════════════════════════════════════════
+
+import json
+import os
+from datetime import datetime
+from typing import Any
+
+# ── 추이 → 수치 변환 ─────────────────────────────────────────────────────────
+_TREND_TO_SCORE: dict[str, float] = {
+    "▲": +1.0,
+    "▼": -1.0,
+    "→": 0.0,
+}
+
+# ── 지표별 방향성 ─────────────────────────────────────────────────────────────
+# +1 = 해당 지표가 상승(▲)할 때 수출기업에 긍정적
+# -1 = 해당 지표가 상승(▲)할 때 수출기업에 부정적
+_MACRO_DIRECTION: dict[str, int] = {
+    "환율(원/$)":         +1,   # 원화 약세 → 수출 단가 경쟁력 상승
+    "수출증가율":          +1,   # 수출 자체 증가 → 직접 긍정
+    "기준금리":           -1,   # 금리 상승 → 자금조달 비용 증가
+    "소비자물가(CPI)":    -1,   # 물가 상승 → 내수 구매력·원가 부담
+    "수출물가지수":        +1,   # 수출 단가 상승 → 수익성 개선
+    "수입물가지수":        -1,   # 수입 원자재 비용 상승 → 마진 압박
+    "원/100엔 환율":      +1,   # 엔 강세 → 일본 경쟁사 대비 유리
+}
+
+
+def _macro_score_label(score: float) -> str:
+    if score >= 2.0:   return "매우 우호적 🟢🟢"
+    if score >= 0.8:   return "우호적 🟢"
+    if score >= -0.8:  return "중립 🟡"
+    if score >= -2.0:  return "비우호적 🔴"
+    return "매우 불리 🔴🔴"
+
+
+def calculate_macro_impact_score(
+    macro_data: dict[str, Any],
+    industry_key: str,
+) -> dict[str, Any]:
+    """
+    산업별 거시경제 임팩트 스코어를 trend 기반으로 계산한다.
+
+    Args:
+        macro_data: data/macro.json 로드 결과 (각 항목에 trend, value, note 포함)
+        industry_key: industry_config.py의 산업 키 (예: '반도체', '자동차')
+
+    Returns:
+        {
+          "total": float,          # -3.0 ~ +3.0
+          "label": str,            # "우호적 🟢" 등
+          "breakdown": dict,       # 지표별 기여도 {"환율(원/$)": +0.75, ...}
+          "top_positive": str,     # 가장 긍정적인 요인명
+          "top_negative": str,     # 가장 부정적인 요인명
+          "industry": str,
+          "computed_at": str,
+        }
+    """
+    profile = get_profile(industry_key)
+    weights = profile.get("macro_weights", {})
+
+    breakdown: dict[str, float] = {}
+    total = 0.0
+    total_weight = 0.0
+
+    for label, item in macro_data.items():
+        if not isinstance(item, dict):
+            continue
+        if label not in weights:
+            continue
+
+        trend = item.get("trend", "→")
+        direction = _MACRO_DIRECTION.get(label, +1)
+        trend_score = _TREND_TO_SCORE.get(trend, 0.0)
+        weight = weights[label]
+
+        contribution = trend_score * direction * weight
+        breakdown[label] = round(contribution, 3)
+        total += contribution
+        total_weight += weight
+
+    # -3 ~ +3 범위로 정규화
+    normalized = (total / total_weight * 3.0) if total_weight > 0 else 0.0
+    normalized = max(-3.0, min(3.0, normalized))
+
+    sorted_bd = sorted(breakdown.items(), key=lambda x: x[1], reverse=True)
+    top_positive = sorted_bd[0][0] if sorted_bd and sorted_bd[0][1] > 0 else "—"
+    top_negative = sorted_bd[-1][0] if sorted_bd and sorted_bd[-1][1] < 0 else "—"
+
+    return {
+        "total": round(normalized, 1),
+        "label": _macro_score_label(normalized),
+        "breakdown": breakdown,
+        "top_positive": top_positive,
+        "top_negative": top_negative,
+        "industry": industry_key,
+        "computed_at": datetime.now().isoformat(),
+    }
+
+
+# ── 직전 데이터 대비 스코어 비교 ──────────────────────────────────────────────
+#
+# macro.json에 이미 있는 prev_value를 활용해 day 1부터 delta 표시 가능.
+#
+# 방식: 지표별 "절대 수준 스코어"를 현재값/이전값 각각 계산 후 비교.
+#   - 절대 수준 스코어 = sign(value - midpoint) × direction × weight
+#   - midpoint: 경제적 중립 기준값 (환율 1320원, CPI 2.5% 등)
+#   - 해석: 현재 경기 여건이 이전 데이터 기간보다 개선/악화됐는지 즉시 확인
+#
+# vs 세션 히스토리 방식:
+#   - 세션 방식: "내가 마지막으로 앱을 열었을 때 대비" → 누적 필요
+#   - prev_value 방식: "직전 경제 데이터 기간 대비" → 즉시 사용 가능
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 지표별 경제적 중립 기준값 (level-based 스코어링 기준)
+_LEVEL_MIDPOINTS: dict[str, float] = {
+    "환율(원/$)":       1320.0,   # 원/달러: 2024년 평균 기준
+    "수출증가율":           0.0,   # 수출 증가율 0% = 성장 없음
+    "기준금리":            3.0,   # 3% = 중립 금리 기준
+    "소비자물가(CPI)":     2.5,   # 한은 목표 물가 2%~2.5%
+    "수출물가지수":          0.0,   # 전년 대비 0% = 변화 없음
+    "수입물가지수":          0.0,   # 전년 대비 0% = 변화 없음
+    "원/100엔 환율":      900.0,   # 엔/원 900원 = 기준선
+}
+
+
+def _level_score_single(value: float, label: str) -> float:
+    """단일 값의 절대 수준 스코어 (+1.0 or -1.0)."""
+    mid = _LEVEL_MIDPOINTS.get(label, 0.0)
+    return +1.0 if value >= mid else -1.0
+
+
+def calculate_prev_period_delta(
+    macro_data: dict[str, Any],
+    industry_key: str,
+) -> dict[str, Any]:
+    """
+    macro.json의 현재값(value)과 직전값(prev_value)을 비교해
+    "직전 데이터 기간 대비 경기 여건 변화"를 즉시 산출한다.
+
+    세션 히스토리 없이 day 1부터 의미 있는 delta 제공.
+
+    방식:
+      level_score(value)     = sign(value - midpoint) × direction × weight
+      level_score(prev_value) = sign(prev_value - midpoint) × direction × weight
+      delta = 현재 레벨스코어 - 이전 레벨스코어
+
+    Returns:
+        {
+          "curr_level_score": float,   # 현재값 기준 레벨스코어
+          "prev_level_score": float,   # 직전값 기준 레벨스코어
+          "delta": float,              # 양수=개선, 음수=악화
+          "delta_label": str,          # "↑ +0.4 직전 대비 개선" 등
+          "changed_indicators": list,  # 방향이 바뀐 지표명 리스트
+        }
+    """
+    profile = get_profile(industry_key)
+    weights = profile.get("macro_weights", {})
+
+    curr_total = 0.0
+    prev_total = 0.0
+    total_weight = 0.0
+    changed: list[str] = []
+
+    for label, item in macro_data.items():
+        if not isinstance(item, dict) or label not in weights:
+            continue
+        try:
+            curr_val = float(str(item.get("value", "0")).replace(",", "").replace("+", ""))
+            prev_raw = item.get("prev_value")
+            if prev_raw is None:
+                continue
+            prev_val = float(str(prev_raw).replace(",", "").replace("+", ""))
+        except (ValueError, TypeError):
+            continue
+
+        direction = _MACRO_DIRECTION.get(label, +1)
+        weight    = weights[label]
+
+        c_score = _level_score_single(curr_val, label) * direction * weight
+        p_score = _level_score_single(prev_val, label) * direction * weight
+
+        curr_total   += c_score
+        prev_total   += p_score
+        total_weight += weight
+
+        # 방향이 바뀐 지표 감지 (레벨 변화)
+        if (c_score > 0) != (p_score > 0):
+            changed.append(label)
+
+    if total_weight == 0:
+        return {"curr_level_score": 0.0, "prev_level_score": 0.0,
+                "delta": 0.0, "delta_label": "—", "changed_indicators": []}
+
+    curr_norm = round(max(-3.0, min(3.0, curr_total / total_weight * 3.0)), 1)
+    prev_norm = round(max(-3.0, min(3.0, prev_total / total_weight * 3.0)), 1)
+    delta     = round(curr_norm - prev_norm, 1)
+
+    if delta > 0:
+        delta_label = f"↑ +{delta} 직전 대비 개선"
+    elif delta < 0:
+        delta_label = f"↓ {delta} 직전 대비 악화"
+    else:
+        delta_label = "→ ±0.0 직전과 동일"
+
+    return {
+        "curr_level_score":  curr_norm,
+        "prev_level_score":  prev_norm,
+        "delta":             delta,
+        "delta_label":       delta_label,
+        "changed_indicators": changed,
+        "has_prev_data":     True,
+    }
+
+
+# ── Score Delta & 히스토리 (세션 기반) ───────────────────────────────────────
+#
+# score_history.json 구조:
+# {
+#   "반도체": [
+#     {"ts": "2026-03-09T12:27:00", "score": 2.6},
+#     {"ts": "2026-03-02T10:10:00", "score": 2.1},
+#     ...  (최대 MAX_HISTORY 개, 최신순)
+#   ]
+# }
+#
+# 세션 기반: "업데이트" 클릭 or 앱 새로고침 시마다 저장.
+# 동일 날짜(YYYY-MM-DD) 내 중복 저장은 덮어쓰기(스코어 갱신).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCORE_HISTORY_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "data", "score_history.json"
+)
+_MAX_HISTORY = 8   # 스파크라인용 최대 보관 개수
+
+
+def _load_score_history() -> dict[str, list]:
+    try:
+        with open(_SCORE_HISTORY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # 구형 format(dict of dict) → 신형 format(dict of list) 자동 마이그레이션
+        migrated: dict[str, list] = {}
+        for ind, val in data.items():
+            if isinstance(val, list):
+                migrated[ind] = val
+            elif isinstance(val, dict):
+                # 구형: {"2026-03": 2.6, ...}  → 날짜 정렬 후 list 변환
+                entries = sorted(val.items(), reverse=True)
+                migrated[ind] = [
+                    {"ts": f"{k}-01T00:00:00", "score": v}
+                    for k, v in entries
+                ]
+        return migrated
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_score_history(history: dict[str, list]) -> None:
+    os.makedirs(os.path.dirname(_SCORE_HISTORY_PATH), exist_ok=True)
+    with open(_SCORE_HISTORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def update_and_get_score_delta(
+    industry_key: str,
+    current_score: float,
+) -> dict[str, Any]:
+    """
+    현재 스코어를 score_history.json에 세션 기록으로 저장하고
+    직전 세션 대비 delta 및 스파크라인용 히스토리를 반환한다.
+
+    동일 날짜(YYYY-MM-DD) 내에는 가장 최신 값으로 덮어쓴다.
+
+    Returns:
+        {
+          "delta": float | None,          # 직전 값 대비 변화량
+          "delta_label": str,             # "↑ +0.7 (이전 대비 개선)" 등
+          "prev_score": float | None,
+          "prev_ts": str | None,          # ISO timestamp of previous entry
+          "days_ago": int | None,         # 직전 기록이 며칠 전인지
+          "history": list[float],         # 스파크라인용 [oldest→newest] 최대 8개
+        }
+    """
+    now = datetime.now()
+    now_date = now.strftime("%Y-%m-%d")
+    now_ts   = now.isoformat(timespec="seconds")
+
+    history = _load_score_history()
+    entries: list[dict] = history.get(industry_key, [])
+
+    # 동일 날짜 기존 항목 덮어쓰기 or 새 항목 추가
+    today_idx = next(
+        (i for i, e in enumerate(entries) if e["ts"][:10] == now_date), None
+    )
+    if today_idx is not None:
+        entries[today_idx] = {"ts": now_ts, "score": current_score}
+    else:
+        entries.insert(0, {"ts": now_ts, "score": current_score})
+
+    # 최신순 정렬 후 최대 MAX_HISTORY 유지
+    entries.sort(key=lambda e: e["ts"], reverse=True)
+    entries = entries[:_MAX_HISTORY]
+    history[industry_key] = entries
+    _save_score_history(history)
+
+    # 직전 값 (오늘 제외 첫 번째)
+    prev_entries = [e for e in entries if e["ts"][:10] != now_date]
+    if prev_entries:
+        prev = prev_entries[0]
+        prev_score = prev["score"]
+        prev_ts    = prev["ts"]
+        try:
+            prev_dt  = datetime.fromisoformat(prev_ts[:19])
+            days_ago = (now - prev_dt).days
+        except ValueError:
+            days_ago = None
+        delta = round(current_score - prev_score, 1)
+        if delta > 0:
+            ago_str = f"{days_ago}일 전" if days_ago and days_ago > 0 else "이전"
+            delta_label = f"↑ +{delta}  {ago_str} 대비 개선"
+        elif delta < 0:
+            ago_str = f"{days_ago}일 전" if days_ago and days_ago > 0 else "이전"
+            delta_label = f"↓ {delta}  {ago_str} 대비 악화"
+        else:
+            delta_label = "→ ±0.0  변동 없음"
+    else:
+        prev_score = None
+        prev_ts    = None
+        days_ago   = None
+        delta      = None
+        delta_label = "첫 번째 기록"
+
+    # 스파크라인용: oldest→newest 순서로
+    spark = [e["score"] for e in reversed(entries)]
+
+    return {
+        "delta":       delta,
+        "delta_label": delta_label,
+        "prev_score":  prev_score,
+        "prev_ts":     prev_ts,
+        "days_ago":    days_ago,
+        "history":     spark,
+    }

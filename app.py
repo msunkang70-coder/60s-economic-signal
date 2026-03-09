@@ -2453,6 +2453,251 @@ def _render_industry_focus(industry_key: str) -> None:
     """)
 
 
+def _render_impact_score_banner(macro_data: dict, industry_key: str) -> None:
+    """
+    Tab 1 상단 — 산업 임팩트 스코어 배너.
+
+    방법론 일관성:
+      - 현재 스코어 : trend(▲/▼/→) × 방향성 × 가중치  [-3.0 ~ +3.0]
+      - 직전 기간 비교: level(value vs midpoint) × 방향성 × 가중치
+                       → 현재/이전 모두 동일 공식 적용 → delta 신뢰 가능
+      - 세션 히스토리 : 스파크라인 전용 (delta 계산에서 제외)
+
+    4-row 레이아웃:
+      Row 1 — 제목(좌) + 직전 대비 delta 뱃지(우) [변화 없으면 숨김]
+      Row 2 — 대형 스코어 + 라벨(좌) + 스파크라인(우)
+      Row 2.5 — 한 줄 설명 (왜 우호적/불리한지)
+      Row 3 — 구분선 + 긍정/부정 주요인 (방향 포함)
+    """
+    try:
+        from core.impact_scorer import (
+            calculate_macro_impact_score,
+            update_and_get_score_delta,
+            calculate_prev_period_delta,
+        )
+    except ImportError:
+        return
+    try:
+        result = calculate_macro_impact_score(macro_data, industry_key)
+    except Exception:
+        return
+
+    score     = result["total"]
+    label     = result["label"]
+    breakdown = result["breakdown"]
+
+    # ── 지표별 방향 설명 사전 ──────────────────────────────────────────────────
+    _IND_NAMES: dict[str, dict[str, str]] = {
+        "환율(원/$)":      {"▲": "원화 약세", "▼": "원화 강세",    "→": "환율 안정"},
+        "수출증가율":       {"▲": "수출 증가율 상승", "▼": "수출 증가율 하락", "→": "수출 증가율 보합"},
+        "기준금리":        {"▲": "금리 인상",  "▼": "금리 인하",   "→": "금리 동결"},
+        "소비자물가(CPI)": {"▲": "물가 상승",  "▼": "물가 하락",   "→": "물가 안정"},
+        "수출물가지수":     {"▲": "수출 단가 상승", "▼": "수출 단가 하락", "→": "수출 단가 보합"},
+        "수입물가지수":     {"▲": "수입 원가 상승", "▼": "수입 원가 하락", "→": "수입 원가 보합"},
+        "원/100엔 환율":   {"▲": "엔 강세",    "▼": "엔 약세",     "→": "엔화 보합"},
+    }
+
+    def _ind_desc(name: str) -> str:
+        trend = macro_data.get(name, {}).get("trend", "→")
+        return _IND_NAMES.get(name, {}).get(trend, name)
+
+    def _ko_subj(word: str) -> str:
+        """주격 조사 이/가: 마지막 글자 받침 유무로 자동 판별."""
+        if not word:
+            return "이"
+        c = ord(word[-1])
+        if 0xAC00 <= c <= 0xD7A3 and (c - 0xAC00) % 28 == 0:
+            return "가"   # 받침 없음: 약세, 상승, 안정, 보합 등
+        return "이"       # 받침 있음: 인상, 인하, 동결 등
+
+    # ── 주요인 (방향 포함 설명으로 표시) ─────────────────────────────────────
+    top_pos_raw = result["top_positive"]
+    top_neg_raw = result["top_negative"]
+    top_pos = _ind_desc(top_pos_raw) if top_pos_raw != "—" else "—"
+    top_neg = _ind_desc(top_neg_raw) if top_neg_raw != "—" else "없음"
+
+    # ── 한 줄 설명 ────────────────────────────────────────────────────────────
+    sorted_bd   = sorted(breakdown.items(), key=lambda x: x[1], reverse=True)
+    pos_descs   = [_ind_desc(k) for k, v in sorted_bd if v > 0][:2]
+    neg_descs   = [_ind_desc(k) for k, v in sorted_bd if v < 0][:2]
+
+    if score >= 2.0:
+        if pos_descs:
+            _joined = " 및 ".join(pos_descs)
+            explanation = f"{_joined}{_ko_subj(_joined)} {industry_key} 수출 환경을 강하게 뒷받침하고 있습니다."
+        else:
+            explanation = f"{industry_key} 수출 환경이 매우 우호적입니다."
+    elif score >= 0.8:
+        if pos_descs:
+            _joined = ", ".join(pos_descs)
+            explanation = f"{_joined}{_ko_subj(_joined)} {industry_key} 수출 환경에 긍정적으로 작용하고 있습니다."
+        else:
+            explanation = f"{industry_key} 수출 환경이 전반적으로 우호적입니다."
+    elif score >= -0.8:
+        _parts = []
+        if pos_descs: _parts.append(f"{pos_descs[0]}의 긍정 요인")
+        if neg_descs: _parts.append(f"{neg_descs[0]}의 부담")
+        explanation = (" 속에 ".join(_parts) + "이 혼재하는 중립 국면입니다.") if _parts \
+                      else f"{industry_key} 수출 환경이 중립적입니다."
+    elif score >= -2.0:
+        if neg_descs:
+            _joined = ", ".join(neg_descs)
+            explanation = f"{_joined}{_ko_subj(_joined)} {industry_key} 수출 환경에 부담으로 작용하고 있습니다."
+        else:
+            explanation = f"{industry_key} 수출 환경이 비우호적입니다."
+    else:
+        if neg_descs:
+            _joined = " 및 ".join(neg_descs)
+            explanation = f"{_joined}{_ko_subj(_joined)} {industry_key} 수출 환경에 강한 압박을 주고 있습니다."
+        else:
+            explanation = f"{industry_key} 수출 환경이 매우 불리합니다."
+
+    # ── 세션 히스토리 (스파크라인 전용) ──────────────────────────────────────
+    try:
+        di      = update_and_get_score_delta(industry_key, score)
+        history = di["history"]
+    except Exception:
+        history = [score]
+
+    # ── 직전 기간 대비 delta (PRIMARY — 동일 방법론) ──────────────────────────
+    try:
+        pd           = calculate_prev_period_delta(macro_data, industry_key)
+        prev_delta   = pd["delta"]
+        changed_inds = pd["changed_indicators"]
+    except Exception:
+        prev_delta   = None
+        changed_inds = []
+
+    # ── 테마 색상 ─────────────────────────────────────────────────────────────
+    if score >= 0.8:
+        s_color, bg_color, border = "#16a34a", "#f0fdf4", "#bbf7d0"
+    elif score >= -0.8:
+        s_color, bg_color, border = "#d97706", "#fffbeb", "#fde68a"
+    else:
+        s_color, bg_color, border = "#dc2626", "#fef2f2", "#fecaca"
+
+    # ── Delta 뱃지: 변화 없으면 숨김, 변화 있을 때만 표시 ───────────────────
+    if prev_delta is not None and prev_delta != 0.0:
+        if prev_delta > 0:
+            d_icon, d_color, d_val = "&#9650;", "#16a34a", f"+{prev_delta}"
+        else:
+            d_icon, d_color, d_val = "&#9660;", "#dc2626", str(prev_delta)
+        changed_tag = (
+            f'<div style="font-size:9px;color:#9ca3af;margin-top:2px;text-align:right;">'
+            f'전환: {", ".join(changed_inds[:2])}{"…" if len(changed_inds) > 2 else ""}</div>'
+        ) if changed_inds else ""
+        delta_html = (
+            f'<div>'
+            f'<span style="display:inline-block;font-size:12px;font-weight:700;'
+            f'color:{d_color};background:rgba(0,0,0,.07);padding:4px 12px;border-radius:20px;">'
+            f'{d_icon} {d_val} 직전 대비</span>'
+            f'{changed_tag}</div>'
+        )
+    else:
+        # ±0.0이거나 prev_value 없음 → 뱃지 숨김
+        delta_html = ""
+
+    # ── SVG 스파크라인 ────────────────────────────────────────────────────────
+    def _sparkline_svg(scores: list, w: int = 72, h: int = 28) -> str:
+        if len(scores) < 2:
+            return ""
+        n   = len(scores)
+        lo  = min(scores) - 0.2
+        hi  = max(scores) + 0.2
+        rng = hi - lo if hi != lo else 1.0
+        xs  = [round(i / (n - 1) * w, 1) for i in range(n)]
+        ys  = [round((1 - (s - lo) / rng) * h, 1) for s in scores]
+        pts = " ".join(f"{x},{y}" for x, y in zip(xs, ys))
+        lc  = "#16a34a" if scores[-1] >= 0.8 else ("#dc2626" if scores[-1] < -0.8 else "#d97706")
+        return (
+            f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="overflow:visible;">'
+            f'<polyline points="{pts}" fill="none" stroke="{lc}" '
+            f'stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>'
+            f'<circle cx="{xs[-1]}" cy="{ys[-1]}" r="3" fill="{lc}"/>'
+            f'</svg>'
+        )
+
+    spark = _sparkline_svg(history)
+    spark_block = (
+        f'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;'
+        f'padding:6px 10px;background:rgba(0,0,0,.04);border-radius:8px;">'
+        f'{spark}'
+        f'<span style="font-size:9px;color:#9ca3af;white-space:nowrap;">추이 {len(history)}회</span>'
+        f'</div>'
+    ) if spark else ""
+
+    # ── 부정 요인 색상 ─────────────────────────────────────────────────────────
+    neg_color    = "#dc2626" if top_neg != "없음" else "#9ca3af"
+    # Row 1 헤더 영역: delta 없으면 제목만 표시 (flex 유지)
+    header_right = delta_html if delta_html else ""
+
+    # ── 메인 배너 (4-row 구조) ────────────────────────────────────────────────
+    st.html(f"""
+    <div style="background:{bg_color};border:1px solid {border};
+                border-left:5px solid {s_color};border-radius:10px;
+                padding:14px 20px;margin-bottom:6px;">
+
+      <!-- Row 1: 제목(좌) + delta 뱃지(우, 변화 있을 때만) -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;
+                  margin-bottom:8px;">
+        <div style="font-size:10px;color:#6b7280;font-weight:700;
+                    text-transform:uppercase;letter-spacing:.8px;padding-top:3px;">
+          {industry_key} 산업 임팩트 스코어
+        </div>
+        {header_right}
+      </div>
+
+      <!-- Row 2: 대형 스코어 + 라벨(좌) + 스파크라인(우) -->
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:42px;font-weight:900;color:{s_color};line-height:1;">
+            {score:+.1f}
+          </span>
+          <span style="font-size:15px;color:{s_color};font-weight:600;">
+            {label}
+          </span>
+        </div>
+        {spark_block}
+      </div>
+
+      <!-- Row 2.5: 한 줄 설명 -->
+      <div style="margin-top:6px;font-size:11px;color:#4b5563;font-style:italic;
+                  line-height:1.5;">
+        {explanation}
+      </div>
+
+      <!-- Row 3: 구분선 + 주요인 (방향 포함) -->
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid {border};
+                  display:flex;gap:28px;font-size:11px;color:#374151;flex-wrap:wrap;">
+        <span>&#128200; 긍정 요인: <strong style="color:#16a34a;">{top_pos}</strong></span>
+        <span>&#128201; 부정 요인: <strong style="color:{neg_color};">{top_neg}</strong></span>
+      </div>
+
+    </div>
+    """)
+
+    # ── 지표별 기여도 상세 (접힌 상태) ───────────────────────────────────────
+    with st.expander("📊 지표별 기여도 상세", expanded=False):
+        sorted_items = sorted(breakdown.items(), key=lambda x: x[1], reverse=True)
+        if sorted_items:
+            cells_html = "".join(
+                f'<div style="flex:1;min-width:90px;text-align:center;padding:8px 4px;'
+                f'background:#f9fafb;border-radius:6px;'
+                f'border-top:3px solid {"#16a34a" if c > 0 else ("#dc2626" if c < 0 else "#6b7280")};'
+                f'margin:0 3px;">'
+                f'<div style="font-size:10px;color:#6b7280;margin-bottom:3px;word-break:keep-all;">{k}</div>'
+                f'<div style="font-size:17px;font-weight:800;'
+                f'color:{"#16a34a" if c > 0 else ("#dc2626" if c < 0 else "#6b7280")};">'
+                f'{"&#9650;" if c > 0 else ("&#9660;" if c < 0 else "&#8594;")}{abs(c):.2f}</div>'
+                f'<div style="font-size:9px;margin-top:3px;'
+                f'color:{"#16a34a" if c > 0 else ("#dc2626" if c < 0 else "#6b7280")};">'
+                f'{"수출 유리" if c > 0 else ("수출 불리" if c < 0 else "중립")}</div>'
+                f'</div>'
+                for k, c in sorted_items
+            )
+            st.html(f'<div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px 0;">{cells_html}</div>')
+
+
 def _render_kpi_section_v2(industry_key: str) -> None:
     """
     Primary KPI 카드 v2 — 새 계층 구조 (item 3 spec):
@@ -2581,7 +2826,10 @@ def _render_kpi_section_v2(industry_key: str) -> None:
 
 
 def _render_industry_comparison(macro_data: dict) -> None:
-    """전 산업 거시경제 영향 비교표 — expander 안에 표시."""
+    """
+    전 산업 거시경제 영향 비교표 — expander 안에 표시.
+    [Item 2] 종합 임팩트 스코어 컬럼 추가 (수치 + 색상).
+    """
     if not macro_data:
         return
     try:
@@ -2591,16 +2839,34 @@ def _render_industry_comparison(macro_data: dict) -> None:
     if not rows:
         return
 
+    # 산업별 종합 임팩트 스코어 계산
+    try:
+        from core.impact_scorer import calculate_macro_impact_score as _cms
+        _score_map = {}
+        for row in rows:
+            try:
+                r = _cms(macro_data, row["key"])
+                _score_map[row["key"]] = (r["total"], r["label"])
+            except Exception:
+                _score_map[row["key"]] = (0.0, "중립 🟡")
+    except ImportError:
+        _score_map = {}
+
     _COLOR_CELL = {
         "green":  ("🟢", "#f0fdf4", "#15803d"),
         "yellow": ("🟡", "#fffbeb", "#92400e"),
         "red":    ("🔴", "#fef2f2", "#991b1b"),
     }
+    _SCORE_STYLE = lambda s: (
+        ("#f0fdf4", "#16a34a") if s >= 0.8 else
+        ("#fef2f2", "#dc2626") if s < -0.8 else
+        ("#fffbeb", "#d97706")
+    )
 
     with st.expander("🔍 전 산업 거시경제 영향 비교", expanded=False):
         st.html("""
         <div style="font-size:11px;color:#64748b;margin-bottom:8px">
-          환율/금리/수요 차원에서 각 산업별 현재 거시경제 영향을 요약합니다.
+          환율 · 금리 · 수요 차원의 질적 신호와 종합 임팩트 스코어(-3.0 ~ +3.0)를 함께 표시합니다.
         </div>
         """)
 
@@ -2609,11 +2875,13 @@ def _render_industry_comparison(macro_data: dict) -> None:
           <th style="text-align:left;padding:10px 14px;font-size:11px;
                      color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">산업</th>
           <th style="text-align:center;padding:10px 14px;font-size:11px;
-                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">환율 영향</th>
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">종합 임팩트</th>
           <th style="text-align:center;padding:10px 14px;font-size:11px;
-                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">금리 영향</th>
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">환율</th>
           <th style="text-align:center;padding:10px 14px;font-size:11px;
-                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">수요 동향</th>
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">금리</th>
+          <th style="text-align:center;padding:10px 14px;font-size:11px;
+                     color:#4B4F9A;font-weight:700;border-bottom:2px solid #C8C9FF">수요</th>
         </tr>
         """
         rows_html = ""
@@ -2623,16 +2891,26 @@ def _render_industry_comparison(macro_data: dict) -> None:
             def _cell(color_key: str, text: str) -> str:
                 em, cbg, cfg = _COLOR_CELL.get(color_key, ("🟡", "#fffbeb", "#92400e"))
                 return (
-                    f'<td style="text-align:center;padding:8px 12px">'
-                    f'<span style="background:{cbg};color:{cfg};padding:2px 10px;'
-                    f'border-radius:12px;font-size:11px;font-weight:700">'
+                    f'<td style="text-align:center;padding:8px 10px">'
+                    f'<span style="background:{cbg};color:{cfg};padding:2px 8px;'
+                    f'border-radius:12px;font-size:11px;font-weight:600">'
                     f'{em} {text}</span></td>'
                 )
+
+            score_val, _ = _score_map.get(row["key"], (0.0, "중립 🟡"))
+            sbg, sfg = _SCORE_STYLE(score_val)
+            score_cell = (
+                f'<td style="text-align:center;padding:8px 10px">'
+                f'<span style="background:{sbg};color:{sfg};padding:3px 10px;'
+                f'border-radius:12px;font-size:12px;font-weight:800;">'
+                f'{score_val:+.1f}</span></td>'
+            )
 
             rows_html += (
                 f'<tr style="background:{bg};border-bottom:1px solid #f1f5f9">'
                 f'<td style="padding:8px 12px;font-size:12px;font-weight:600;color:#1e293b">'
                 f'{row["icon"]} {row["label"]}</td>'
+                + score_cell
                 + _cell(row["fx_color"],     row["fx_impact"])
                 + _cell(row["rate_color"],   row["rate_impact"])
                 + _cell(row["demand_color"], row["demand_trend"])
@@ -2648,6 +2926,229 @@ def _render_industry_comparison(macro_data: dict) -> None:
           </table>
         </div>
         """)
+
+
+# ══════════════════════════════════════════════════════
+# [Item 4] 임계값 알림 시스템
+# ══════════════════════════════════════════════════════
+# 주요 지표가 임계값을 넘을 때 Tab 1 최상단에 조용한 알림 표시
+_ALERT_RULES: list[tuple] = [
+    # (지표명, 조건함수, 알림문구_템플릿, 심각도)
+    ("환율(원/$)",       lambda v: v > 1450,
+     "환율 {v:.0f}원 초과 — 달러 결제 조건 및 헤지 비율 즉시 재검토 필요", "critical"),
+    ("환율(원/$)",       lambda v: 1380 < v <= 1450,
+     "환율 {v:.0f}원대 진입 — 수출계약 달러 비중 및 환노출 점검 권고", "warning"),
+    ("기준금리",          lambda v: v >= 3.5,
+     "기준금리 {v:.2f}% — 자금조달 비용 증가 구간, 단기 차입 구조 재검토", "warning"),
+    ("소비자물가(CPI)",  lambda v: v >= 3.0,
+     "소비자물가 {v:.1f}% — 원가·인건비 압박 구간, 수출 마진 점검 필요", "warning"),
+    ("수출증가율",        lambda v: v < -5.0,
+     "수출증가율 {v:.1f}% — 수출 감소 국면, 주요 시장 다변화 전략 점검", "critical"),
+    ("수입물가지수",      lambda v: v > 5.0,
+     "수입물가 {v:.1f}% 상승 — 원자재 조달 비용 압박, 계약 조건 재협상 검토", "warning"),
+]
+
+
+def _render_threshold_alerts(macro_data: dict, industry_key: str) -> None:
+    """
+    핵심 지표가 임계값을 초과할 때 Tab 1 최상단에 조용한 경보 배너 표시.
+    - critical: 붉은 배경, 즉시 조치 필요
+    - warning: 노란 배경, 모니터링 권고
+    """
+    if not macro_data:
+        return
+
+    triggered: list[tuple[str, str]] = []  # (severity, text)
+    for label, rule_fn, template, severity in _ALERT_RULES:
+        item = macro_data.get(label)
+        if not item or not isinstance(item, dict):
+            continue
+        try:
+            val = float(str(item.get("value", "0")).replace(",", "").replace("+", ""))
+        except (ValueError, TypeError):
+            continue
+        if rule_fn(val):
+            triggered.append((severity, template.format(v=val)))
+            break  # 같은 지표에서 최고 우선순위만 표시
+
+    if not triggered:
+        return
+
+    for severity, text in triggered:
+        if severity == "critical":
+            bg, border, icon, tc = "#fef2f2", "#f87171", "🚨", "#991b1b"
+        else:
+            bg, border, icon, tc = "#fffbeb", "#fcd34d", "⚠️", "#92400e"
+        st.html(f"""
+        <div style="background:{bg};border:1px solid {border};border-left:4px solid {border};
+                    border-radius:8px;padding:10px 16px;margin-bottom:8px;
+                    display:flex;align-items:center;gap:10px;">
+          <span style="font-size:16px;">{icon}</span>
+          <span style="font-size:12px;font-weight:600;color:{tc};">{text}</span>
+        </div>
+        """)
+
+
+# ══════════════════════════════════════════════════════
+# [Item 3] Signal-to-Action 브리핑 카드
+# ══════════════════════════════════════════════════════
+def _render_action_briefing(
+    macro_data: dict,
+    industry_key: str,
+    signals: list[dict],
+) -> None:
+    """
+    임팩트 스코어 배너 직후 — '지금 해야 할 것' 3개 액션 카드.
+    signals의 action 필드를 활용하여 rule-based로 생성.
+    """
+    if not macro_data or not signals:
+        return
+    try:
+        from core.impact_scorer import calculate_macro_impact_score
+        result = calculate_macro_impact_score(macro_data, industry_key)
+        score = result["total"]
+    except Exception:
+        score = 0.0
+
+    # 스코어 기반 환경 요약 문구
+    if score >= 2.0:
+        env_line = "현재 수출 환경이 매우 우호적입니다. 이 모멘텀을 활용할 시점입니다."
+        header_color, header_bg = "#166534", "#f0fdf4"
+    elif score >= 0.8:
+        env_line = "수출 환경이 우호적입니다. 기회 요인을 최대화하고 리스크를 선제 관리하세요."
+        header_color, header_bg = "#166534", "#f0fdf4"
+    elif score >= -0.8:
+        env_line = "수출 환경이 중립 구간입니다. 변화 방향에 따라 선제 대응이 중요합니다."
+        header_color, header_bg = "#92400e", "#fffbeb"
+    else:
+        env_line = "수출 환경에 압박 요인이 있습니다. 우선순위 대응 사항을 확인하세요."
+        header_color, header_bg = "#991b1b", "#fef2f2"
+
+    # 상위 액션 추출: 가중치 높은 순으로 정렬, action 있는 것만
+    _COLOR_ICON = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
+    top = sorted(
+        [s for s in signals if s.get("action", "").strip()],
+        key=lambda s: s.get("weight", 0),
+        reverse=True,
+    )[:3]
+
+    if not top:
+        return
+
+    action_rows = ""
+    for sig in top:
+        icon = _COLOR_ICON.get(sig.get("color", "yellow"), "🟡")
+        trend = sig.get("trend", "→")
+        lbl   = sig.get("label", "")
+        act   = sig.get("action", "")
+        action_rows += (
+            f'<div style="display:flex;align-items:flex-start;gap:10px;'
+            f'padding:8px 0;border-bottom:1px solid rgba(0,0,0,.06);">'
+            f'<span style="font-size:14px;flex-shrink:0;">{icon}</span>'
+            f'<div>'
+            f'<div style="font-size:10px;color:#6b7280;font-weight:600;margin-bottom:2px;">'
+            f'{lbl} {trend}</div>'
+            f'<div style="font-size:12px;color:#1e293b;font-weight:500;">{act}</div>'
+            f'</div></div>'
+        )
+
+    st.html(f"""
+    <div style="background:{header_bg};border:1px solid rgba(0,0,0,.08);
+                border-radius:10px;padding:14px 18px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:{header_color};
+                  text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">
+        ⚡ 지금 해야 할 것 — {industry_key}
+      </div>
+      <div style="font-size:11px;color:#374151;margin-bottom:10px;font-style:italic;">
+        {env_line}
+      </div>
+      {action_rows}
+    </div>
+    """)
+
+
+# ══════════════════════════════════════════════════════
+# [Item 1] 산업별 임팩트 랭킹
+# ══════════════════════════════════════════════════════
+_RANK_INDUSTRIES = ["반도체", "자동차", "배터리", "조선", "화학", "철강", "소비재"]
+
+
+def _render_industry_impact_ranking(macro_data: dict) -> None:
+    """
+    전 산업 임팩트 스코어 순위표 — 비교표 아래에 배치.
+    calculate_macro_impact_score로 실시간 산출 후 내림차순 정렬.
+    """
+    if not macro_data:
+        return
+    try:
+        from core.impact_scorer import calculate_macro_impact_score
+        from core.industry_config import get_profile
+    except ImportError:
+        return
+
+    ranked = []
+    for ind in _RANK_INDUSTRIES:
+        try:
+            r = calculate_macro_impact_score(macro_data, ind)
+            profile = get_profile(ind)
+            ranked.append({
+                "key":   ind,
+                "label": profile.get("label", ind),
+                "icon":  profile.get("icon", "📦"),
+                "score": r["total"],
+                "lbl":   r["label"],
+            })
+        except Exception:
+            continue
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+
+    if not ranked:
+        return
+
+    # 메달 / 색상
+    _MEDALS = {0: "🥇", 1: "🥈", 2: "🥉"}
+    _SCORE_COLOR = lambda s: "#16a34a" if s >= 0.8 else ("#dc2626" if s < -0.8 else "#d97706")
+    _SCORE_BG    = lambda s: "#f0fdf4" if s >= 0.8 else ("#fef2f2" if s < -0.8 else "#fffbeb")
+    _BAR_W       = lambda s: max(4, int((s + 3) / 6 * 100))  # 0~100%
+
+    rows_html = ""
+    for i, item in enumerate(ranked):
+        s     = item["score"]
+        medal = _MEDALS.get(i, f'<span style="font-size:11px;color:#6b7280;font-weight:700;">{i+1}</span>')
+        bar_w = _BAR_W(s)
+        sc    = _SCORE_COLOR(s)
+        sb    = _SCORE_BG(s)
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:10px;'
+            f'padding:8px 12px;border-bottom:1px solid #f1f5f9;'
+            f'background:{"#fafffe" if i % 2 == 0 else "#ffffff"};">'
+            f'<div style="width:28px;text-align:center;font-size:16px;">{medal}</div>'
+            f'<div style="flex:1;min-width:0;">'
+            f'<div style="font-size:12px;font-weight:600;color:#1e293b;">'
+            f'{item["icon"]} {item["label"]}</div>'
+            f'<div style="margin-top:4px;height:5px;background:#f1f5f9;border-radius:3px;">'
+            f'<div style="width:{bar_w}%;height:100%;background:{sc};border-radius:3px;'
+            f'transition:width .3s;"></div></div>'
+            f'</div>'
+            f'<div style="background:{sb};color:{sc};font-size:13px;font-weight:800;'
+            f'padding:4px 12px;border-radius:20px;white-space:nowrap;min-width:52px;text-align:center;">'
+            f'{s:+.1f}</div>'
+            f'</div>'
+        )
+
+    st.html(f"""
+    <div style="border:1px solid #e2e8f0;border-radius:10px;
+                overflow:hidden;margin-top:8px;">
+      <div style="background:#EAEBFF;padding:10px 16px;
+                  display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:12px;font-weight:700;color:#4B4F9A;">
+          🏆 산업별 임팩트 랭킹
+        </span>
+        <span style="font-size:10px;color:#6b7280;">현재 거시경제 기준 | -3.0 ~ +3.0</span>
+      </div>
+      {rows_html}
+    </div>
+    """)
 
 
 # ══════════════════════════════════════════════════════
@@ -2787,50 +3288,29 @@ def render_ui() -> None:
             if st.session_state.get("feedback_done"):
                 st.html("""
                 <div style="
-                    background: #FFFDE7;
-                    border: 2px solid #FFF59D;
-                    border-radius: 22px;
-                    padding: 28px 24px;
-                    margin: 12px 0;
-                    position: relative;
-                    box-shadow: 0 4px 24px rgba(255,235,59,0.18);
-                    overflow: hidden;
+                    background: #ecfdf5;
+                    border: 1px solid #10b981;
+                    border-radius: 12px;
+                    padding: 16px;
+                    margin: 8px 0 0;
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 12px;
                 ">
-                  <!-- 모서리 꽃 (큰) -->
-                  <span style="position:absolute;top:10px;left:14px;font-size:22px;opacity:0.85;line-height:1">🌼</span>
-                  <span style="position:absolute;top:10px;right:14px;font-size:22px;opacity:0.85;line-height:1">🌼</span>
-                  <span style="position:absolute;bottom:10px;left:14px;font-size:20px;opacity:0.75;line-height:1">🌼</span>
-                  <span style="position:absolute;bottom:10px;right:14px;font-size:20px;opacity:0.75;line-height:1">🌼</span>
-                  <!-- 사이드 꽃 (중간) -->
-                  <span style="position:absolute;top:44%;left:6px;font-size:15px;opacity:0.55;line-height:1">🌼</span>
-                  <span style="position:absolute;top:44%;right:6px;font-size:15px;opacity:0.55;line-height:1">🌼</span>
-                  <!-- 상하 가운데 꽃 (작은) -->
-                  <span style="position:absolute;top:8px;left:50%;transform:translateX(-50%);font-size:13px;opacity:0.5;line-height:1">🌼</span>
-                  <span style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:13px;opacity:0.5;line-height:1">🌼</span>
-
-                  <!-- 내부 흰 카드 -->
-                  <div style="
-                      background: rgba(255,255,255,0.82);
-                      border-radius: 14px;
-                      padding: 22px 20px 20px;
-                      text-align: center;
-                      backdrop-filter: blur(4px);
-                  ">
-                    <div style="font-size:30px;margin-bottom:8px;line-height:1">💛</div>
+                  <span style="font-size:18px;line-height:1.4;flex-shrink:0">✅</span>
+                  <div>
                     <div style="
-                        font-size:16px;
-                        font-weight:800;
-                        color:#795548;
-                        letter-spacing:0.5px;
-                        margin-bottom:6px;
-                    ">감사합니다!</div>
+                        font-size:13.5px;
+                        font-weight:600;
+                        color:#065f46;
+                        margin-bottom:3px;
+                    ">피드백이 성공적으로 제출되었습니다</div>
                     <div style="
-                        font-size:12.5px;
-                        color:#8D6E63;
-                        line-height:1.8;
+                        font-size:12px;
+                        color:#047857;
+                        line-height:1.6;
                     ">
-                      소중한 피드백이 잘 저장되었습니다.<br>
-                      더 좋은 서비스를 만드는 데 큰 힘이 됩니다 🌻
+                      소중한 의견 감사합니다.<br>서비스 개선에 반영하겠습니다.
                     </div>
                   </div>
                 </div>
@@ -2852,6 +3332,23 @@ def render_ui() -> None:
                 try:
                     _ecos_refresh()
                     log_event("macro_refresh")
+                    # 업데이트 시 전체 산업 임팩트 스코어 일괄 저장
+                    # → 산업별 탭을 직접 클릭하지 않아도 히스토리가 쌓임
+                    try:
+                        from core.impact_scorer import (
+                            calculate_macro_impact_score,
+                            update_and_get_score_delta,
+                        )
+                        from core.industry_config import INDUSTRY_PROFILES
+                        _fresh_macro = _load_macro()
+                        for _ind_k in INDUSTRY_PROFILES:
+                            try:
+                                _r = calculate_macro_impact_score(_fresh_macro, _ind_k)
+                                update_and_get_score_delta(_ind_k, _r["total"])
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                     st.toast("✅ 거시지표 갱신 완료!")
                 except Exception as _e:
                     st.error(f"갱신 실패: {_e}")
@@ -2868,9 +3365,21 @@ def render_ui() -> None:
         except Exception:
             _signals = []
 
+        # [Item 4] 임계값 알림 — 최상단, 포커스 배너 위
+        if _MACRO:
+            _render_threshold_alerts(_MACRO, _sel_ind)
+
         # 0. 산업 포커스 배너 (선택 산업 + 민감도 태그)
         _render_industry_focus(_sel_ind)
         st.divider()
+
+        # 0-1. 산업 임팩트 스코어 배너 (거시지표 trend 기반 자동 산출)
+        if _MACRO:
+            _render_impact_score_banner(_MACRO, _sel_ind)
+
+        # [Item 3] Signal-to-Action 브리핑 카드 — 임팩트 배너 직후
+        if _MACRO and _signals:
+            _render_action_briefing(_MACRO, _sel_ind, _signals)
 
         # 1. 오늘의 거시경제 신호 + 3줄 브리핑
         _render_daily_signal_summary(_MACRO, _sel_ind)
@@ -2908,8 +3417,12 @@ def render_ui() -> None:
         # 5. 보조 지표 (엔화 / 수출물가 / 수입물가)
         _render_secondary_indicators()
 
-        # 6. 전 산업 거시경제 영향 비교표
+        # 6. 전 산업 거시경제 영향 비교표 [Item 2: 종합 임팩트 스코어 추가]
         _render_industry_comparison(_MACRO)
+
+        # [Item 1] 산업별 임팩트 랭킹
+        if _MACRO:
+            _render_industry_impact_ranking(_MACRO)
 
         # 7. 데이터 출처 footer
         st.html("""
