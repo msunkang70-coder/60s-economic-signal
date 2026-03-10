@@ -3776,6 +3776,7 @@ def render_ui() -> None:
             st.rerun()
 
     # ── 오늘의 핵심 신호 카드 (Hero 바로 아래, 탭 위) ──
+    _section_header("⚡ 오늘의 핵심 신호", "현재 경제 상황 요약 및 즉시 행동 가이드", "1")
     _render_today_signal(_sel_ind)
 
     # ── [T-22] Impact Strip (신호등 스트립) ──
@@ -3900,15 +3901,7 @@ def render_ui() -> None:
     _today_sig = generate_today_signal(_MACRO, _sel_ind)
     _decision_opts = generate_decision_options(_MACRO, _sel_ind, _today_sig)
     if _decision_opts:
-        st.html("""
-        <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:800;
-                    color:#1e293b;margin-bottom:4px">
-          🎯 전략 옵션
-        </div>
-        <div style="font-size:13px;color:#64748b;margin-bottom:12px">
-          현재 경제 신호 기반 — 우리 기업이 취할 수 있는 전략 옵션 3가지
-        </div>
-        """)
+        _section_header("🎯 전략 옵션", "현재 경제 신호 기반 — 기업이 취할 수 있는 전략 3가지", "4")
         _urg_style = {
             "즉시":   ("🔴", "#fef2f2", "#dc2626", "#991b1b"),
             "이번 주": ("🟠", "#fff7ed", "#f97316", "#9a3412"),
@@ -3951,7 +3944,7 @@ def render_ui() -> None:
     st.divider()
 
     # ── [4] 주요 기사 목록 (임팩트 스코어 내림차순) ──────────
-    _section_header("📰 주요 기사 목록", "KDI 나라경제 + 뉴스 RSS — 임팩트 스코어 내림차순", "4")
+    _section_header("📰 주요 기사 목록", "KDI 나라경제 + 뉴스 RSS — 임팩트 스코어 내림차순", "5")
 
     # 기사 자동 수집 (session state 초기화)
     st.session_state.setdefault("docs", [])
@@ -4235,7 +4228,7 @@ def render_ui() -> None:
     # [6] ⚙️ 워치리스트 설정
     # ══════════════════════════════════════════════════════════════
     st.divider()
-    _section_header("⚙️ 워치리스트 설정", "임계값 초과 시 이메일 알림", "5")
+    _section_header("⚙️ 워치리스트 설정", "임계값 초과 시 이메일 알림", "6")
     st.caption("거시지표가 설정한 임계값을 초과하면 이메일 알림을 받습니다.")
 
     try:
