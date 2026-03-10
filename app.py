@@ -1378,23 +1378,21 @@ def _render_download_section(docs: list) -> None:
     today  = _date.today().strftime("%Y%m%d")
     yyyymm = docs[0]["issue_yyyymm"] if docs else "000000"
 
-    _section_header("⬇️ 다운로드", "HTML 리포트 및 JSON 데이터 내보내기")
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        report_bytes = generate_report_html(docs, sel_doc, detail).encode("utf-8")
+    _section_header("⬇️ 다운로드", "브리핑 리포트 저장")
+    report_bytes = generate_report_html(docs, sel_doc, detail).encode("utf-8")
+    st.download_button(
+        label="📋 1페이지 리포트 (HTML) 다운로드",
+        data=report_bytes,
+        file_name=f"report_{yyyymm}_{today}.html",
+        mime="text/html",
+        use_container_width=True,
+        key="dl_report_html",
+    )
+    with st.expander("⚙️ 고급 — 원본 데이터 내보내기 (개발자용)"):
+        st.caption("전체 기사 데이터를 JSON 형식으로 내보냅니다.")
+        export_bytes = export_data_json(docs, sel_doc, detail, sort_order).encode("utf-8")
         st.download_button(
-            label="📋 1페이지 리포트 (HTML)",
-            data=report_bytes,
-            file_name=f"report_{yyyymm}_{today}.html",
-            mime="text/html",
-            use_container_width=True,
-            key="dl_report_html",
-        )
-    with col_b:
-        export_bytes = export_data_json(docs, sel_doc, detail, sort_order).encode("utf-8")  # FIX
-        st.download_button(
-            label="📦 데이터 내보내기 (JSON)",
+            label="📦 전체 데이터 JSON 다운로드",
             data=export_bytes,
             file_name=f"data_{yyyymm}_{today}.json",
             mime="application/json",
@@ -3806,7 +3804,7 @@ def render_ui() -> None:
     st.divider()
 
     # ── [2.5] 시나리오 분석 ──────────────────────────────────
-    with st.expander("🔮 시나리오 분석", expanded=False):
+    with st.expander("🔮 시나리오 분석  🚧 개선 준비 중", expanded=False):
         try:
             from core.scenario_engine import SCENARIO_PRESETS, simulate_scenario
 
@@ -3865,7 +3863,7 @@ def render_ui() -> None:
             st.error(f"시나리오 분석 오류: {_sc_err}")
 
     # ── [2.6] 글로벌 시장 추천 ───────────────────────────────
-    with st.expander("🌏 글로벌 시장 추천", expanded=False):
+    with st.expander("🌏 글로벌 시장 추천  🚧 개선 준비 중", expanded=False):
         try:
             from core.market_recommender import recommend_markets as _recommend_markets
 
@@ -4198,31 +4196,51 @@ def render_ui() -> None:
     elif not st.session_state.docs:
         st.info("목록을 불러오는 중입니다...")
 
-    st.divider()
-
-    # ── [5] 리포트 다운로드 ──────────────────────────────────
-    st.header("📥 리포트 다운로드")
-    _sel_doc = st.session_state.get("last_doc")
-    _sel_detail = st.session_state.get("last_detail")
-    if _sel_doc and _sel_detail:
-        _full_json = json.dumps(
-            {**_sel_doc, **_sel_detail}, ensure_ascii=False, indent=2
-        )
-        try:
-            log_event("report_download", {"industry": _sel_ind})
-        except Exception:
-            pass
-        st.download_button(
-            "⬇️ 선택 문서 JSON 다운로드",
-            data=_full_json.encode("utf-8"),
-            file_name=f"{_sel_doc['doc_id']}.json",
-            mime="application/json",
-            key="dl_selected_json_scroll",
-            use_container_width=True,
-        )
-
     _render_content_history()
     _render_download_section(st.session_state.docs)
+
+    # ── 리포트 이메일 발송 (다운로드 섹션 바로 아래) ──────────────
+    try:
+        from core.emailer import is_configured as _email_ok2, send_report_email as _send_report2
+        _email_configured2 = _email_ok2()
+    except Exception:
+        _email_configured2 = False
+
+    if _email_configured2:
+        _docs_for_email2   = st.session_state.get("docs", [])
+        _doc_for_email2    = st.session_state.get("last_doc")
+        _detail_for_email2 = st.session_state.get("last_detail")
+        _btn_disabled2 = not bool(_docs_for_email2)
+        st.html("""
+        <div style="margin-top:4px;margin-bottom:4px;font-family:'Inter',sans-serif;
+                    font-size:12px;color:#64748b">
+          📧 리포트를 이메일로 바로 받아보세요
+        </div>
+        """)
+        if st.button(
+            "📧 이메일로 리포트 발송",
+            use_container_width=True,
+            disabled=_btn_disabled2,
+            help="정책브리핑 탭에서 기사를 로드하세요" if _btn_disabled2 else "현재 대시보드 리포트를 이메일로 발송",
+            key="btn_send_report_email_main",
+        ):
+            with st.spinner("이메일 발송 중..."):
+                try:
+                    from core.emailer import send_report_email as _sre
+                    _html2 = generate_report_html(_docs_for_email2, _doc_for_email2, _detail_for_email2)
+                    _profile_label2 = get_profile(_sel_ind).get("label", _sel_ind)
+                    _subject2 = (
+                        f"[{_date.today().strftime('%Y-%m-%d')}] "
+                        f"{_profile_label2} 경제신호 리포트"
+                    )
+                    _ok2 = _sre(_html2, _subject2)
+                    if _ok2:
+                        st.toast("✅ 이메일 발송 완료!")
+                        log_event("report_email_sent", {"industry": _sel_ind})
+                    else:
+                        st.error("발송 실패 — 이메일 설정을 확인하세요")
+                except Exception as _e2:
+                    st.error(f"발송 오류: {_e2}")
 
     # ══════════════════════════════════════════════════════════════
     # [6] ⚙️ 워치리스트 설정
