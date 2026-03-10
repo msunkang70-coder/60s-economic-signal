@@ -1378,8 +1378,7 @@ def _render_download_section(docs: list) -> None:
     today  = _date.today().strftime("%Y%m%d")
     yyyymm = docs[0]["issue_yyyymm"] if docs else "000000"
 
-    st.markdown("---")
-    st.markdown("### ⬇️ 다운로드")
+    _section_header("⬇️ 다운로드", "HTML 리포트 및 JSON 데이터 내보내기")
     col_a, col_b = st.columns(2)
 
     with col_a:
@@ -4284,28 +4283,43 @@ def render_ui() -> None:
                     "이메일": "✅" if _it.get("notify_email") else "❌",
                     "마지막 발동": _it.get("last_triggered") or "—",
                 })
-            _wl_df = pd.DataFrame(_wl_rows)
-            # 임계값 컬럼 숫자 포맷 (이미 문자열이면 그대로 유지)
-            try:
-                _wl_df["임계값"] = _wl_df["임계값"].apply(
-                    lambda x: f"{float(x):,.1f}" if str(x).replace('.','').replace(',','').lstrip('-').isdigit() else x
-                )
-            except Exception:
-                pass
-            st.dataframe(
-                _wl_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "지표":       st.column_config.TextColumn("지표", width="medium"),
-                    "조건":       st.column_config.TextColumn("조건", width="small"),
-                    "임계값":     st.column_config.TextColumn("임계값 ⚡", width="small"),
-                    "관련 산업":  st.column_config.TextColumn("산업", width="medium"),
-                    "이메일":     st.column_config.TextColumn("📧", width="small"),
-                    "마지막 발동":st.column_config.TextColumn("마지막 발동", width="medium"),
-                },
-                height=min(55 + len(_wl_rows) * 45, 320),
-            )
+            # 워치리스트 테이블 — custom HTML (교대 배경색 + threshold 강조)
+            _wl_header = """
+            <tr style="background:#5B5FEE;">
+              <th style="padding:10px 14px;font-size:12px;font-weight:700;color:#fff;text-align:left;border:none">지표</th>
+              <th style="padding:10px 14px;font-size:12px;font-weight:700;color:#fff;text-align:left;border:none">조건</th>
+              <th style="padding:10px 14px;font-size:12px;font-weight:700;color:#fff;text-align:left;border:none">임계값 ⚡</th>
+              <th style="padding:10px 14px;font-size:12px;font-weight:700;color:#fff;text-align:left;border:none">산업</th>
+              <th style="padding:10px 14px;font-size:12px;font-weight:700;color:#fff;text-align:center;border:none">📧</th>
+              <th style="padding:10px 14px;font-size:12px;font-weight:700;color:#fff;text-align:left;border:none">마지막 발동</th>
+            </tr>"""
+            _wl_body = ""
+            for _ri, _row in enumerate(_wl_rows):
+                _bg = "#F4F4FF" if _ri % 2 == 0 else "#ffffff"
+                try:
+                    _thr_fmt = f"{float(_row['임계값']):,.1f}"
+                except Exception:
+                    _thr_fmt = str(_row["임계값"])
+                _email_cell = '<span style="color:#22c55e;font-size:15px">✔</span>' if _row["이메일"] == "✅" else '<span style="color:#94a3b8">—</span>'
+                _last = _row["마지막 발동"] if _row["마지막 발동"] != "—" else '<span style="color:#94a3b8">—</span>'
+                _wl_body += f"""
+                <tr style="background:{_bg};">
+                  <td style="padding:11px 14px;font-size:13px;font-weight:600;color:#1e293b;border-top:1px solid #e2e8f0">{_row['지표']}</td>
+                  <td style="padding:11px 14px;font-size:13px;color:#475569;border-top:1px solid #e2e8f0">{_row['조건']}</td>
+                  <td style="padding:11px 14px;font-size:13px;font-weight:700;color:#5B5FEE;border-top:1px solid #e2e8f0">{_thr_fmt}</td>
+                  <td style="padding:11px 14px;font-size:13px;color:#475569;border-top:1px solid #e2e8f0">{_row['관련 산업']}</td>
+                  <td style="padding:11px 14px;text-align:center;border-top:1px solid #e2e8f0">{_email_cell}</td>
+                  <td style="padding:11px 14px;font-size:12px;color:#64748b;border-top:1px solid #e2e8f0">{_last}</td>
+                </tr>"""
+            st.html(f"""
+            <div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;
+                        font-family:'Inter',sans-serif;margin-bottom:8px">
+              <table style="width:100%;border-collapse:collapse">
+                <thead>{_wl_header}</thead>
+                <tbody>{_wl_body}</tbody>
+              </table>
+            </div>
+            """)
 
             with st.expander("🗑️ 항목 삭제"):
                 _wl_del_options = {
