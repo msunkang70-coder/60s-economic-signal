@@ -31,6 +31,7 @@ from core.impact_scorer import score_article, score_articles
 from core.action_checklist import generate_checklist
 from core.analytics import log_event, get_daily_summary
 from core.today_signal import generate_today_signal
+from core.decision_engine import generate_decision_options
 from core.macro_signal_engine import detect_macro_signals, get_signal_summary
 from core.industry_mapper import map_industry_impact, get_industry_comparison
 from core.strategy_generator import generate_all_insights
@@ -631,21 +632,27 @@ _SUMMARY_STYLE = {
 }
 
 
-def _render_summary_3lines(summary_text: str, source: str = "") -> None:
-    """
-    3줄 요약을 구조화된 카드 형식으로 렌더링.
+_4FRAME_STYLE = {
+    "impact":      {"icon": "📊", "color": "#1e40af", "bg": "#eff6ff", "border": "#3b82f6", "label": "Impact(영향)"},
+    "risk":        {"icon": "📉", "color": "#991b1b", "bg": "#fef2f2", "border": "#ef4444", "label": "Risk(리스크)"},
+    "opportunity": {"icon": "💡", "color": "#065f46", "bg": "#f0fdf4", "border": "#22c55e", "label": "Opportunity(기회)"},
+    "action":      {"icon": "✅", "color": "#7c2d12", "bg": "#fff7ed", "border": "#f97316", "label": "Action(즉시 행동)"},
+}
 
-    ★ 수정: st.html() 분리 호출 → 단일 st.markdown() 호출로 변경
-      - st.html()은 iframe별 높이 제한으로 긴 문장이 잘리는 버그 있음
-      - st.markdown(unsafe_allow_html=True) 사용 시 텍스트 전체 표시 보장
 
-    source: "gemini" | "rule" | "" — 출처 배지 표시용
+def _render_summary_3lines(summary_text, source: str = "") -> None:
     """
-    if not summary_text or not summary_text.strip():
+    요약을 구조화된 카드 형식으로 렌더링.
+
+    summary_text:
+      - dict {"impact","risk","opportunity","action"} → 4-frame 카드
+      - str → 기존 3줄 카드 (하위 호환)
+
+    source: "groq" | "rule" | "" — 출처 배지 표시용
+    """
+    if not summary_text:
         st.info("요약 정보가 없습니다.")
         return
-
-    lines = [ln.strip() for ln in summary_text.split("\n") if ln.strip()]
 
     # 출처 배지
     if source in ("groq", "gemini"):
@@ -658,6 +665,37 @@ def _render_summary_3lines(summary_text: str, source: str = "") -> None:
                  'border:1px solid #e2e8f0;margin-left:8px">규칙 기반</span>')
     else:
         badge = ""
+
+    # ── 4-frame dict 렌더링 ──────────────────────────────────
+    if isinstance(summary_text, dict) and all(k in summary_text for k in ("impact", "risk", "opportunity", "action")):
+        cards_html = ""
+        for key in ("impact", "risk", "opportunity", "action"):
+            s = _4FRAME_STYLE[key]
+            body = summary_text[key]
+            cards_html += (
+                f'<div style="display:flex;align-items:flex-start;gap:10px;'
+                f'padding:11px 14px;margin-bottom:8px;'
+                f'background:{s["bg"]};border-left:4px solid {s["border"]};'
+                f'border-radius:0 8px 8px 0">'
+                f'<div style="min-width:80px;font-size:10px;font-weight:800;'
+                f'color:{s["color"]};line-height:1.4;padding-top:2px;flex-shrink:0">'
+                f'{s["icon"]}<br>{s["label"]}</div>'
+                f'<div style="font-size:13px;color:#1e293b;line-height:1.75;'
+                f'word-break:keep-all;overflow-wrap:break-word">{body}</div>'
+                f'</div>'
+            )
+        st.markdown(
+            f'<div style="margin-top:4px">{badge}{cards_html}</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    # ── 기존 str 3줄 요약 렌더링 (하위 호환) ─────────────────
+    if isinstance(summary_text, str) and not summary_text.strip():
+        st.info("요약 정보가 없습니다.")
+        return
+
+    lines = [ln.strip() for ln in summary_text.split("\n") if ln.strip()]
 
     def _card(num: str, body: str, empty: bool = False) -> str:
         style = _SUMMARY_STYLE[num]
@@ -3165,31 +3203,155 @@ def _render_industry_impact_ranking(macro_data: dict) -> None:
 # 4-A. 오늘의 핵심 신호 카드
 # ══════════════════════════════════════════════════════
 def _render_today_signal(industry_key: str) -> None:
-    """탭 위에 '오늘의 핵심 경제 신호' 카드 렌더링."""
+    """탭 위에 '오늘의 핵심 경제 신호' Hero Card 렌더링."""
     signal = generate_today_signal(_MACRO, industry_key)
     if not signal:
         return
 
+    profile = get_profile(industry_key)
     trend_color = "#dc2626" if signal["trend"] == "▲" else "#2563eb" if signal["trend"] == "▼" else "#6b7280"
-    checklist_html = "".join(
-        f'<div style="margin:4px 0;font-size:13px">📌 확인: {item}</div>'
-        for item in signal.get("checklist", [])
-    )
+
+    # Impact Detail 3분류
+    detail = signal.get("impact_detail", {})
+    impact_text = detail.get("impact", signal["impact"])
+    risk_text = detail.get("risk", "")
+    opportunity_text = detail.get("opportunity", "")
+
+    # 체크리스트: 첫 번째만 Hero에 표시, 나머지는 접힘
+    checklist = signal.get("checklist", [])
+    first_action = checklist[0] if checklist else ""
+    extra_checklist = checklist[1:]
+    extra_html = ""
+    if extra_checklist:
+        extra_items = "".join(
+            f'<div style="margin:4px 0;font-size:13px;color:#475569">📌 {item}</div>'
+            for item in extra_checklist
+        )
+        extra_html = f"""
+        <details style="margin-top:8px">
+          <summary style="font-size:13px;color:#5B5FEE;cursor:pointer;font-weight:600">
+            + 추가 확인 항목 보기 ({len(extra_checklist)}개)
+          </summary>
+          <div style="margin-top:6px">{extra_items}</div>
+        </details>"""
 
     st.html(f"""
-    <div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);
-                border:2px solid #3b82f6;border-radius:16px;
-                padding:20px 24px;margin-bottom:16px">
-      <div style="font-size:13px;font-weight:700;color:#3b82f6;margin-bottom:8px">
-        ⚡ 오늘의 핵심 경제 신호
+    <div style="background:linear-gradient(135deg,#eff6ff 0%,#e0e7ff 100%);
+                border:2px solid #5B5FEE;border-radius:20px;
+                padding:28px 32px;margin-bottom:20px;
+                font-family:'Inter',sans-serif;position:relative">
+      <!-- 헤더: 제목 + 산업 배지 -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-size:14px;font-weight:700;color:#5B5FEE">
+          ⚡ 오늘의 핵심 신호
+        </div>
+        <div style="background:#5B5FEE;color:#fff;font-size:12px;font-weight:600;
+                    padding:4px 12px;border-radius:20px">
+          {profile['icon']} {profile['label']}
+        </div>
       </div>
-      <div style="font-size:22px;font-weight:800;color:#1e293b;margin-bottom:4px">
-        {signal['label']} {signal['value']} <span style="color:{trend_color}">{signal['trend']}</span>
+
+      <!-- 지표 값 -->
+      <div style="font-size:26px;font-weight:800;color:#1e293b;margin-bottom:20px">
+        {signal['label']}&nbsp;&nbsp;
+        <span style="font-size:28px">{signal['value']}</span>&nbsp;
+        <span style="color:{trend_color};font-size:24px">{signal['trend']}</span>
       </div>
-      <div style="font-size:14px;color:#334155;margin-bottom:12px">
-        {signal['impact']}
+
+      <!-- Impact / Risk / Opportunity 3컬럼 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+        <div style="background:rgba(59,130,246,0.08);border-radius:12px;padding:14px 16px">
+          <div style="font-size:12px;font-weight:700;color:#3B82F6;margin-bottom:6px">
+            📊 Impact
+          </div>
+          <div style="font-size:13px;color:#1e40af;line-height:1.5">{impact_text}</div>
+        </div>
+        <div style="background:rgba(239,68,68,0.08);border-radius:12px;padding:14px 16px">
+          <div style="font-size:12px;font-weight:700;color:#EF4444;margin-bottom:6px">
+            📉 Risk
+          </div>
+          <div style="font-size:13px;color:#991b1b;line-height:1.5">{risk_text}</div>
+        </div>
+        <div style="background:rgba(34,197,94,0.08);border-radius:12px;padding:14px 16px">
+          <div style="font-size:12px;font-weight:700;color:#22C55E;margin-bottom:6px">
+            💡 Opportunity
+          </div>
+          <div style="font-size:13px;color:#166534;line-height:1.5">{opportunity_text}</div>
+        </div>
       </div>
-      {checklist_html}
+
+      <!-- 즉시 행동 1개 -->
+      {"" if not first_action else f'''
+      <div style="background:rgba(91,95,238,0.08);border-radius:10px;padding:12px 16px;
+                  border-left:4px solid #5B5FEE">
+        <span style="font-size:13px;font-weight:700;color:#5B5FEE">✦ 즉시 행동 :</span>
+        <span style="font-size:13px;color:#334155;margin-left:6px">{first_action}</span>
+      </div>'''}
+
+      <!-- 추가 체크리스트 (접힘) -->
+      {extra_html}
+    </div>
+    """)
+
+
+# ══════════════════════════════════════════════════════
+# 4-A2. Impact Strip (신호등 스트립)
+# ══════════════════════════════════════════════════════
+_IMPACT_STRIP_INDICATORS = [
+    ("환율(원/$)", "환율(원/$)"),
+    ("소비자물가(CPI)", "CPI"),
+    ("기준금리", "금리"),
+]
+
+_STRIP_STATUS_MAP = {
+    "danger":  ("🔴", "위험", "#ef4444"),
+    "warning": ("🟠", "경고", "#f97316"),
+    "caution": ("🟡", "주의", "#f59e0b"),
+    "normal":  ("🟢", "정상", "#22c55e"),
+}
+
+_STRIP_TOOLTIP = {
+    "환율(원/$)": "원/달러 환율이 높으면 수출 채산성은 개선되지만 수입 원가가 상승합니다",
+    "소비자물가(CPI)": "CPI가 높으면 원가 상승·소비 위축 우려, 낮으면 비용 부담 완화",
+    "기준금리": "고금리는 차입 비용 부담, 저금리는 투자·확장 자금 조달에 유리",
+}
+
+
+def _render_impact_strip() -> None:
+    """Hero Card 아래, KPI 위에 3개 지표 신호등 스트립 렌더링."""
+    if not _MACRO:
+        return
+
+    cells = []
+    for macro_key, display_name in _IMPACT_STRIP_INDICATORS:
+        data = _MACRO.get(macro_key)
+        if not data:
+            continue
+        val_str = str(data.get("value", ""))
+        status, _, _ = _get_threshold_status(macro_key, val_str)
+        emoji, status_label, color = _STRIP_STATUS_MAP.get(status, ("🟢", "정상", "#22c55e"))
+        tooltip = _STRIP_TOOLTIP.get(macro_key, "")
+        cells.append((display_name, emoji, status_label, color, tooltip))
+
+    if not cells:
+        return
+
+    cells_html = ""
+    for idx, (display_name, emoji, status_label, color, tooltip) in enumerate(cells):
+        border = "border-right:1px solid #e2e8f0;" if idx < len(cells) - 1 else ""
+        cells_html += f"""
+        <div style="flex:1;text-align:center;padding:10px 8px;cursor:help;
+                    {border}" title="{tooltip}">
+          <span style="font-size:13px;font-weight:700;color:#334155">{display_name}</span>
+          <span style="margin-left:6px;font-size:14px">{emoji}</span>
+          <span style="font-size:12px;font-weight:600;color:{color};margin-left:4px">{status_label}</span>
+        </div>"""
+
+    st.html(f"""
+    <div style="display:flex;align-items:center;
+                background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;
+                margin-bottom:20px;overflow:hidden;font-family:'Inter',sans-serif">
+      {cells_html}
     </div>
     """)
 
@@ -3220,6 +3382,27 @@ def _render_industry_variable_card(industry_key: str, docs: list) -> None:
             count = sum(1 for d in docs if cv.replace("(", "").replace(")", "") in d.get("title", ""))
             items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → 관련 기사 {count}건</div>'
 
+    # ── KITA 수출 현황 추가 ──────────────────────────────────
+    kita_html = ""
+    try:
+        from core.kita_source import fetch_kita_export_trend
+        _kita = fetch_kita_export_trend(industry_key)
+        if _kita.get("export_amount") or _kita.get("yoy_change"):
+            _kita_parts = []
+            if _kita["export_amount"]:
+                _kita_parts.append(_kita["export_amount"])
+            if _kita["yoy_change"]:
+                _kita_parts.append(f"({_kita['yoy_change']} YoY)")
+            _kita_text = " ".join(_kita_parts)
+            _kita_period = f" [{_kita['period']}]" if _kita.get("period") else ""
+            kita_html = (
+                f'<div style="margin-top:8px;padding:8px 12px;background:#eff6ff;'
+                f'border-radius:8px;font-size:12px;color:#1e40af">'
+                f'📦 {_kita["industry"]} 수출: {_kita_text}{_kita_period}</div>'
+            )
+    except Exception as _kita_err:
+        print(f"[app] KITA 수출 현황 로드 실패: {_kita_err}")
+
     st.html(f"""
     <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:12px;
                 padding:16px 20px;margin-bottom:16px">
@@ -3227,6 +3410,7 @@ def _render_industry_variable_card(industry_key: str, docs: list) -> None:
         {profile['icon']} {profile['label']} 핵심 변수
       </div>
       {items_html}
+      {kita_html}
     </div>
     """)
 
@@ -3472,6 +3656,8 @@ def render_ui() -> None:
     # ── 오늘의 핵심 신호 카드 (Hero 바로 아래, 탭 위) ──
     _render_today_signal(_sel_ind)
 
+    # ── [T-22] Impact Strip (신호등 스트립) ──
+    _render_impact_strip()
 
     # ══════════════════════════════════════════════════════════════
     # [T-08] 단일 스크롤 레이아웃 (탭 구조 대체)
@@ -3608,6 +3794,60 @@ def render_ui() -> None:
 
     st.divider()
 
+    # ── [3.5] 전략 옵션 (Decision Engine) ──────────────────
+    _today_sig = generate_today_signal(_MACRO, _sel_ind)
+    _decision_opts = generate_decision_options(_MACRO, _sel_ind, _today_sig)
+    if _decision_opts:
+        st.html("""
+        <div style="font-family:'Inter',sans-serif;font-size:18px;font-weight:800;
+                    color:#1e293b;margin-bottom:4px">
+          🎯 전략 옵션
+        </div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:12px">
+          현재 경제 신호 기반 — 우리 기업이 취할 수 있는 전략 옵션 3가지
+        </div>
+        """)
+        _urg_style = {
+            "즉시":   ("🔴", "#fef2f2", "#dc2626", "#991b1b"),
+            "이번 주": ("🟠", "#fff7ed", "#f97316", "#9a3412"),
+            "이번 달": ("🟢", "#f0fdf4", "#22c55e", "#166534"),
+        }
+        _diff_icon = {"낮음": "●○○", "중간": "●●○", "높음": "●●●"}
+        _impact_icon = {"낮음": "▪", "중간": "▪▪", "높음": "▪▪▪"}
+
+        _opt_cols = st.columns(3)
+        for _opt, _col in zip(_decision_opts, _opt_cols):
+            with _col:
+                _u_emoji, _u_bg, _u_border, _u_text = _urg_style.get(
+                    _opt["urgency"], ("🟢", "#f0fdf4", "#22c55e", "#166534")
+                )
+                _d_dots = _diff_icon.get(_opt["difficulty"], "●○○")
+                _i_dots = _impact_icon.get(_opt["impact"], "▪")
+                st.html(f"""
+                <div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;
+                            padding:20px;height:100%;font-family:'Inter',sans-serif;
+                            border-top:4px solid {_u_border}">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <span style="font-size:13px;font-weight:800;color:#5B5FEE">옵션 {_opt['option']}</span>
+                    <span style="background:{_u_bg};color:{_u_text};font-size:11px;font-weight:700;
+                                  padding:3px 10px;border-radius:12px;border:1px solid {_u_border}">
+                      {_u_emoji} {_opt['urgency']}
+                    </span>
+                  </div>
+                  <div style="font-size:15px;font-weight:700;color:#1e293b;margin-bottom:8px;
+                              line-height:1.4">{_opt['title']}</div>
+                  <div style="font-size:12.5px;color:#475569;line-height:1.6;margin-bottom:14px">
+                    {_opt['rationale']}
+                  </div>
+                  <div style="display:flex;gap:16px;font-size:11px;color:#64748b">
+                    <span>난이도 <b style="color:#334155">{_d_dots}</b></span>
+                    <span>임팩트 <b style="color:#5B5FEE">{_i_dots}</b></span>
+                  </div>
+                </div>
+                """)
+
+    st.divider()
+
     # ── [4] 주요 기사 목록 (임팩트 스코어 내림차순) ──────────
     st.header("📰 주요 기사 목록")
 
@@ -3623,10 +3863,11 @@ def render_ui() -> None:
         with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
             try:
                 _raw = fetch_list(_KDI_URL, 20)
-                # T-07: 멀티 소스 통합 (KOTRA RSS)
+                # T-07: 멀티 소스 통합 (뉴스 RSS)
                 try:
                     from core.extra_sources import fetch_all_sources
-                    _raw = fetch_all_sources(_raw, kotra_max=5)
+                    _raw, _src_stats = fetch_all_sources(_raw, kotra_max=5, industry_key=_cur_ind)
+                    print(f"[extra_sources] source_stats: {_src_stats}")
                 except Exception as _extra_e:
                     print(f"[extra_sources] 통합 실패, KDI만 사용: {_extra_e}")
                 _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
@@ -3649,10 +3890,11 @@ def render_ui() -> None:
             with st.spinner("목록 수집 중..."):
                 try:
                     _raw = fetch_list(_KDI_URL, int(_scroll_top_n))
-                    # T-07: 멀티 소스 통합 (KOTRA RSS)
+                    # T-07: 멀티 소스 통합 (뉴스 RSS)
                     try:
                         from core.extra_sources import fetch_all_sources
-                        _raw = fetch_all_sources(_raw, kotra_max=5)
+                        _raw, _src_stats = fetch_all_sources(_raw, kotra_max=5, industry_key=_cur_ind)
+                        print(f"[extra_sources] source_stats: {_src_stats}")
                     except Exception as _extra_e:
                         print(f"[extra_sources] 통합 실패, KDI만 사용: {_extra_e}")
                     _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
@@ -3678,34 +3920,85 @@ def render_ui() -> None:
         if _scroll_kw:
             _scored_docs = [d for d in _scored_docs if _scroll_kw in d.get("title", "")]
 
+        # ── 출처 필터 ────────────────────────────────────────
+        _available_sources = sorted({d.get("source", "KDI") for d in _scored_docs})
+        _source_options = ["전체"] + _available_sources
+        _sel_source = st.selectbox(
+            "출처 필터", _source_options,
+            key="source_filter", label_visibility="collapsed",
+        )
+        if _sel_source != "전체":
+            _scored_docs = [d for d in _scored_docs if d.get("source", "KDI") == _sel_source]
+
         _fetched_at = st.session_state.get("docs_fetched_at", "")
         if _fetched_at:
             st.caption(f"기사 {len(_scored_docs)}건 | 기준: {_fetched_at}(KST) | 임팩트 스코어 높은 순")
 
-        for _art_idx, _art in enumerate(_scored_docs, start=1):
+        # ── T-23: 임팩트 Top 3 + 더보기 구조 ──────────────
+        _TOP_N = 3
+        _show_all_key = "show_all_articles"
+        st.session_state.setdefault(_show_all_key, False)
+        _show_all = st.session_state[_show_all_key]
+
+        _score_badge_cfg = {
+            5: ("🔥 HOT", "#fef2f2", "#dc2626"),
+            4: ("⭐ 주요", "#fffbeb", "#f59e0b"),
+        }
+        _accent_colors = {5: "#dc2626", 4: "#f59e0b", 3: "#3b82f6", 2: "#94a3b8", 1: "#cbd5e1"}
+
+        _visible_docs = _scored_docs if _show_all else _scored_docs[:_TOP_N]
+
+        # 출처 배지 맵 (공통)
+        _SRC_BADGE_MAP = {
+            "KDI": ("background:#dbeafe;color:#1e40af;border:1px solid #93c5fd", "KDI"),
+            "연합뉴스경제": ("background:#dcfce7;color:#166534;border:1px solid #86efac", "연합뉴스"),
+            "매일경제": ("background:#dcfce7;color:#166534;border:1px solid #86efac", "매일경제"),
+            "한국경제": ("background:#dcfce7;color:#166534;border:1px solid #86efac", "한국경제"),
+            "산업부": ("background:#fff7ed;color:#9a3412;border:1px solid #fdba74", "산업부"),
+        }
+
+        for _art_idx, _art in enumerate(_visible_docs, start=1):
             _art_score = _art.get("impact_score", 1)
             _art_stars = "★" * _art_score
             _art_title = _art.get("title", "제목 없음")
             _art_yyyymm = _art.get("issue_yyyymm", "")
             _art_date = f"[{_art_yyyymm[:4]}.{_art_yyyymm[4:]}] " if len(_art_yyyymm) == 6 else ""
+            _accent = _accent_colors.get(_art_score, "#cbd5e1")
 
-            # 4-5점 기사: 컬러 배너
-            if _art_score >= 4:
+            # 배지 (5점: HOT, 4점: 주요)
+            _sb_label, _sb_bg, _sb_color = _score_badge_cfg.get(_art_score, ("", "", ""))
+            if _sb_label:
                 st.html(
-                    f'<div style="background:#FFF3CD;border-left:4px solid #F59E0B;'
-                    f'border-radius:4px;padding:4px 12px;margin-bottom:2px;'
-                    f'font-size:11px;font-weight:700;color:#856404">'
-                    f'{_art_stars} 임팩트 {_art_score}점 — 주목 필요</div>'
+                    f'<div style="display:inline-block;background:{_sb_bg};'
+                    f'color:{_sb_color};font-size:11px;font-weight:700;'
+                    f'padding:2px 10px;border-radius:10px;margin-bottom:4px;'
+                    f'border:1px solid {_sb_color}">{_sb_label} 임팩트 {_art_score}점</div>'
                 )
 
             # T-09: 이메일 앵커 링크로 접근 시 해당 기사 자동 펼침
             _is_target = str(_art_idx) == str(_target_article_id) if _target_article_id else False
+            # Top 3은 기본 펼침
+            _auto_expand = _is_target or (_art_idx <= _TOP_N and not _show_all)
             if _is_target:
                 try:
                     log_event("article_click", {"doc_id": _art.get("doc_id", ""), "title": _art_title[:50], "source": "email"})
                 except Exception:
                     pass
-            with st.expander(f"[{_art_stars}] {_art_date}{_art_title}", expanded=_is_target):
+
+            # 출처 태그 (expander 제목에 표시)
+            _art_source = _art.get("source", "KDI")
+            _src_tag = f" [{_art_source}]" if _art_source and _art_source != "KDI" else ""
+            with st.expander(f"[{_art_stars}] {_art_date}{_art_title}{_src_tag}", expanded=_auto_expand):
+                # 컬러 accent bar + 출처 배지
+                _badge_style, _badge_text = _SRC_BADGE_MAP.get(
+                    _art_source, ("background:#f1f5f9;color:#475569;border:1px solid #e2e8f0", _art_source)
+                )
+                st.html(
+                    f'<div style="height:3px;background:{_accent};border-radius:2px;margin-bottom:8px"></div>'
+                    f'<span style="{_badge_style};font-size:10px;font-weight:700;'
+                    f'padding:2px 8px;border-radius:8px">{_badge_text}</span>'
+                )
+
                 # 기사 상세 로드
                 with st.spinner("본문 수집 중..."):
                     try:
@@ -3736,15 +4029,36 @@ def render_ui() -> None:
                         _art_detail = None
 
                 if _art_detail:
-                    # 요약
-                    _pstatus = _art_detail.get("parse_status", "fail")
-                    if _pstatus == "success" and _art_detail.get("summary_3lines"):
-                        _render_summary_3lines(
-                            _art_detail["summary_3lines"],
-                            source=_art_detail.get("summary_source", ""),
-                        )
+                    # T-23: 4-frame 요약 (impact/risk/opportunity/action이 dict인 경우)
+                    _sum_data = _art_detail.get("summary_3lines")
+                    if isinstance(_sum_data, dict) and "impact" in _sum_data:
+                        _frame_items = [
+                            ("📊 Impact", _sum_data.get("impact", ""), "#3B82F6"),
+                            ("📉 Risk", _sum_data.get("risk", ""), "#EF4444"),
+                            ("💡 Opportunity", _sum_data.get("opportunity", ""), "#22C55E"),
+                            ("✅ Action", _sum_data.get("action", ""), "#5B5FEE"),
+                        ]
+                        _frame_html = ""
+                        for _fl, _ft, _fc in _frame_items:
+                            if _ft:
+                                _frame_html += (
+                                    f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
+                                    f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
+                                    f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
+                                    f'<div style="font-size:13px;color:#334155;margin-top:2px">{_ft}</div></div>'
+                                )
+                        if _frame_html:
+                            st.html(f'<div style="font-family:Inter,sans-serif">{_frame_html}</div>')
                     else:
-                        st.warning(f"⚠️ 요약 생성 불가: {_art_detail.get('fail_reason', '수집 실패')}")
+                        # 기존 3줄 요약
+                        _pstatus = _art_detail.get("parse_status", "fail")
+                        if _pstatus == "success" and _sum_data:
+                            _render_summary_3lines(
+                                _sum_data,
+                                source=_art_detail.get("summary_source", ""),
+                            )
+                        else:
+                            st.warning(f"⚠️ 요약 생성 불가: {_art_detail.get('fail_reason', '수집 실패')}")
 
                     # 전략 질문
                     _render_article_strategy_questions(_art, _cur_ind)
@@ -3768,6 +4082,17 @@ def render_ui() -> None:
                     # 선택 문서로 저장 (리포트 다운로드용)
                     st.session_state.last_doc = _art
                     st.session_state.last_detail = _art_detail
+
+        # "더보기" / "접기" 토글 버튼
+        _remaining = len(_scored_docs) - _TOP_N
+        if _remaining > 0 and not _show_all:
+            if st.button(f"📄 + {_remaining}개 기사 더 보기", use_container_width=True, key="btn_show_more_articles"):
+                st.session_state[_show_all_key] = True
+                st.rerun()
+        elif _show_all and _remaining > 0:
+            if st.button("🔼 Top 3만 보기", use_container_width=True, key="btn_show_less_articles"):
+                st.session_state[_show_all_key] = False
+                st.rerun()
 
         # 기타 기사 (관련성 낮음)
         _others = st.session_state.get("docs_others", [])

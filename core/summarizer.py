@@ -38,16 +38,16 @@ from core.utils import single_line
 # 시스템 프롬프트 (산업 특화 LLM 브리핑용)
 # ──────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
-당신은 수출 중소기업 CEO를 위한 경제 브리핑 전문가입니다.
-분석 대상 산업: {industry_label}
+당신은 한국 {industry_label} 수출기업 전략 브리핑 전문가입니다.
+아래 경제 기사를 읽고 다음 4가지 관점에서 각 1문장(30자 이내)으로 분석하세요.
 
-모든 분석은 반드시 이 산업의 수출기업 관점에서 작성합니다.
-일반적인 경제 설명은 하지 않습니다.
+📊 Impact(영향): 이 변화가 {industry_label} 수출기업에 미치는 직접적 영향
+📉 Risk(리스크): 주의해야 할 위험 요소
+💡 Opportunity(기회): 활용 가능한 기회
+✅ Action(즉시 행동): 지금 당장 확인해야 할 것 1가지
 
-출력 형식 (반드시 이 구조 준수):
-① [수출 환경] 환율·통상·시장 변화 핵심 — 1문장
-② [사업 영향] {industry_label} 기업 매출·비용·경쟁력 영향 — 1문장
-③ [실행 포인트] 이번 주 확인하거나 준비할 것 — 1문장
+출력 형식 (반드시 아래 JSON으로):
+{{"impact": "...", "risk": "...", "opportunity": "...", "action": "..."}}
 """
 
 
@@ -419,9 +419,14 @@ def _build_industry_context(industry_key: str) -> str:
     )
 
 
-def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반") -> str | None:
+def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반") -> dict | str | None:
     """
-    Groq (Llama 3.3 70B) API 호출로 3줄 요약 생성.
+    Groq (Llama 3.3 70B) API 호출로 4-frame 요약 생성.
+
+    반환값:
+      - 성공 시: dict {"impact", "risk", "opportunity", "action"}
+      - JSON 파싱 실패 시: str (기존 3줄 텍스트 폴백)
+      - 호출 실패 시: None
 
     무료 한도: 30 RPM / 14,400 RPD
     키 발급: https://console.groq.com → API Keys → Create
@@ -464,31 +469,80 @@ def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반"
             return None
 
         raw_out = resp.json()["choices"][0]["message"]["content"].strip()
-        return _validate_output(raw_out)
+
+        # 4-frame JSON 파싱 시도
+        parsed = _parse_4frame_json(raw_out)
+        if parsed:
+            return parsed
+
+        # JSON 파싱 실패 시 기존 3줄 텍스트 폴백
+        validated = _validate_output(raw_out)
+        if validated:
+            print("[summarizer] 4-frame JSON 파싱 실패 → 3줄 텍스트 폴백")
+            return validated
+        return None
 
     except Exception as e:
         print(f"[summarizer] Groq 호출 실패: {e}")
         return None
 
 
+def _parse_4frame_json(raw: str) -> dict | None:
+    """LLM 출력에서 4-frame JSON을 파싱. 성공 시 dict, 실패 시 None."""
+    if not raw:
+        return None
+
+    # JSON 블록 추출 (```json ... ``` 또는 { ... })
+    json_match = re.search(r"```json\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
+    else:
+        json_match = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+        else:
+            return None
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        return None
+
+    required_keys = {"impact", "risk", "opportunity", "action"}
+    if not required_keys.issubset(data.keys()):
+        return None
+
+    # 모든 값이 비어있지 않은지 확인
+    if not all(isinstance(data[k], str) and data[k].strip() for k in required_keys):
+        return None
+
+    return {k: data[k].strip() for k in required_keys}
+
+
 def summarize_3line(
     text: str,
     title: str = "",
     industry_key: str = "일반",
-) -> tuple[str, str]:
+) -> tuple[dict | str, str]:
     """
-    정책 브리핑용 표준 3줄 요약 생성 (v3 공개 인터페이스).
+    정책 브리핑용 요약 생성 (v4 공개 인터페이스).
 
-    반환: (summary_text, source)
-      source = "groq" | "rule"
+    반환: (summary, source)
+      summary = dict {"impact","risk","opportunity","action"} (4-frame)
+              | str (기존 3줄 텍스트 폴백)
+      source  = "groq" | "rule"
 
     우선순위:
-      1) GROQ_API_KEY 있으면 Llama 3.3 70B (무료)로 고품질 LLM 요약
-      2) 키 없거나 호출 실패 시 규칙 기반 폴백
+      1) GROQ_API_KEY 있으면 Llama 3.3 70B → 4-frame JSON 시도
+      2) JSON 파싱 실패 시 기존 3줄 텍스트 (LLM)
+      3) 키 없거나 호출 실패 시 규칙 기반 폴백
     """
     llm_result = _summarize_with_llm(text, title, industry_key=industry_key)
     if llm_result:
-        print(f"[summarizer] [OK] Groq 요약 성공 ({len(llm_result)}자)")
+        if isinstance(llm_result, dict):
+            print(f"[summarizer] [OK] Groq 4-frame 요약 성공")
+        else:
+            print(f"[summarizer] [OK] Groq 요약 성공 ({len(llm_result)}자)")
         return llm_result, "groq"
 
     print(f"[summarizer] 규칙 기반 폴백 (Groq 키: {'있음' if _get_llm_key() else '없음'})")

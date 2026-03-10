@@ -182,6 +182,69 @@ def _get_impact(category: str, high_or_low: str, industry_key: str) -> str:
     return hl_map.get(industry_key, hl_map.get("일반", "해당 지표 변동에 따른 영향 점검 필요"))
 
 
+# ── Impact / Risk / Opportunity 3분류 ────────────────────
+_IMPACT_DETAIL_MAP = {
+    "환율": {
+        "high": {
+            "impact": "원/달러 환율 상승으로 수출 채산성이 개선되는 구간입니다",
+            "risk": "수입 원자재·부품 비용이 동반 상승할 수 있습니다",
+            "opportunity": "달러 수금 환전 적기 — 환율 이득 확보 가능",
+        },
+        "low": {
+            "impact": "원화 강세로 수출 가격경쟁력이 약화되고 있습니다",
+            "risk": "해외 시장 점유율 하락 위험이 있습니다",
+            "opportunity": "수입 원자재 조달 비용 절감 기회",
+        },
+    },
+    "수출": {
+        "high": {
+            "impact": "수출 증가세로 매출 확대가 기대됩니다",
+            "risk": "급증 시 생산 병목·재고 관리 부담 발생 가능",
+            "opportunity": "신규 시장 확대 및 생산 증설 검토 적기",
+        },
+        "low": {
+            "impact": "수출 감소로 매출·수주 축소가 우려됩니다",
+            "risk": "주요 시장 수요 둔화가 장기화될 수 있습니다",
+            "opportunity": "내수 전환·신시장 개척으로 리스크 분산 가능",
+        },
+    },
+    "물가": {
+        "high": {
+            "impact": "물가 상승으로 원자재·운영 비용이 증가하고 있습니다",
+            "risk": "소비 위축과 판매 단가 전가 어려움이 동시 발생할 수 있습니다",
+            "opportunity": "선제적 단가 재산정으로 마진 방어 가능",
+        },
+        "low": {
+            "impact": "물가 안정으로 원가 부담이 완화되고 있습니다",
+            "risk": "디플레이션 장기화 시 제품 가격 하락 압력",
+            "opportunity": "원가 절감분을 투자·마진 확대에 활용 가능",
+        },
+    },
+    "금리": {
+        "high": {
+            "impact": "고금리로 차입·금융 비용이 증가하고 있습니다",
+            "risk": "설비 투자·운전자본 조달 부담이 심화될 수 있습니다",
+            "opportunity": "고금리 예금·단기 운용으로 여유 자금 수익 극대화",
+        },
+        "low": {
+            "impact": "저금리로 자금 조달 환경이 유리합니다",
+            "risk": "금리 반등 시 변동금리 차입 부담 급증 가능",
+            "opportunity": "장기 고정금리 차입 전환 및 설비 확장 검토 적기",
+        },
+    },
+}
+
+
+def _get_impact_detail(category: str, high_or_low: str) -> dict:
+    """Impact/Risk/Opportunity 3분류 반환."""
+    cat_map = _IMPACT_DETAIL_MAP.get(category, _IMPACT_DETAIL_MAP["환율"])
+    return cat_map.get(high_or_low, cat_map.get("high", {
+        "impact": "해당 지표 변동에 따른 직접 영향 점검 필요",
+        "risk": "관련 리스크 요인 모니터링 필요",
+        "opportunity": "변동 상황에서 활용 가능한 기회 탐색 필요",
+    }))
+
+
 def generate_today_signal(macro_data: dict, industry_key: str) -> dict | None:
     """오늘 가장 중요한 경제 신호 1개를 선택하여 반환.
 
@@ -257,6 +320,7 @@ def generate_today_signal(macro_data: dict, industry_key: str) -> dict | None:
         high_or_low = "high" if val_f >= 3.0 else "low"
 
     impact = _get_impact(category, high_or_low, industry_key)
+    impact_detail = _get_impact_detail(category, high_or_low)
 
     # checklist
     cl_map = _CHECKLIST_MAP.get(category, _CHECKLIST_MAP["환율"])
@@ -267,5 +331,6 @@ def generate_today_signal(macro_data: dict, industry_key: str) -> dict | None:
         "value": val_str,
         "trend": trend,
         "impact": impact,
+        "impact_detail": impact_detail,
         "checklist": checklist,
     }

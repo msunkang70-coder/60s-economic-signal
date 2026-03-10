@@ -1,7 +1,7 @@
 {
   "_meta": {
     "version": "1.0.0",
-    "updated_at": "2026-03-09 21:06:26",
+    "updated_at": "2026-03-10 10:16:54",
     "description": "워치리스트 — 거시지표 임계값 모니터링"
   },
   "items": [
@@ -15,7 +15,7 @@
         "자동차"
       ],
       "notify_email": true,
-      "last_triggered": "2026-03-09 21:06:26"
+      "last_triggered": "2026-03-10 10:16:54"
     },
     {
       "id": "cpi_above_3",

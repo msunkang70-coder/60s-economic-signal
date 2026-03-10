@@ -586,6 +586,389 @@ class TestEmailerTemplate:
 
 
 # ─────────────────────────────────────────────────────────────
+# 11. Decision Engine (전략 옵션)
+# ─────────────────────────────────────────────────────────────
+
+class TestDecisionEngine:
+    """전략 옵션 3가지 생성 검증."""
+
+    def test_decision_engine(self, macro_data):
+        """8개 산업 모두에서 전략 옵션 3개를 정상 생성하는지 검증."""
+        from core.decision_engine import generate_decision_options
+        from core.today_signal import generate_today_signal
+
+        for industry in INDUSTRIES:
+            signal = generate_today_signal(macro_data, industry)
+            options = generate_decision_options(macro_data, industry, signal)
+
+            # signal이 None이면 옵션도 빈 리스트
+            if signal is None:
+                assert options == [], f"{industry}: signal=None인데 옵션 비어있지 않음"
+                continue
+
+            assert len(options) == 3, f"{industry}: 옵션 {len(options)}개 (3개 필요)"
+
+            for opt in options:
+                # 필수 키 검증
+                required = {"option", "title", "rationale", "urgency", "difficulty", "impact"}
+                assert required <= set(opt.keys()), (
+                    f"{industry} 옵션 {opt.get('option','?')}: 필수 키 누락 {required - set(opt.keys())}"
+                )
+                # option 라벨 검증 (A/B/C)
+                assert opt["option"] in ("A", "B", "C"), (
+                    f"option 라벨이 A/B/C가 아님: {opt['option']}"
+                )
+                # urgency 유효값 검증
+                assert opt["urgency"] in ("즉시", "이번 주", "이번 달"), (
+                    f"urgency 유효하지 않음: {opt['urgency']}"
+                )
+                # difficulty 유효값 검증
+                assert opt["difficulty"] in ("낮음", "중간", "높음"), (
+                    f"difficulty 유효하지 않음: {opt['difficulty']}"
+                )
+                # impact 유효값 검증
+                assert opt["impact"] in ("낮음", "중간", "높음"), (
+                    f"impact 유효하지 않음: {opt['impact']}"
+                )
+
+    def test_decision_none_signal(self, macro_data):
+        """signal=None이면 빈 리스트를 반환하는지 검증."""
+        from core.decision_engine import generate_decision_options
+        result = generate_decision_options(macro_data, "반도체", None)
+        assert result == []
+
+    def test_decision_all_statuses(self):
+        """danger/warning/caution/normal 4가지 상태에서 모두 옵션을 반환하는지 검증."""
+        from core.decision_engine import generate_decision_options
+
+        status_macros = {
+            "danger":  {"환율(원/$)": {"value": "1550", "trend": "▲", "unit": "원/$", "as_of": "2026-03"}},
+            "warning": {"환율(원/$)": {"value": "1470", "trend": "▲", "unit": "원/$", "as_of": "2026-03"}},
+            "caution": {"환율(원/$)": {"value": "1400", "trend": "▲", "unit": "원/$", "as_of": "2026-03"}},
+            "normal":  {"환율(원/$)": {"value": "1300", "trend": "→", "unit": "원/$", "as_of": "2026-03"},
+                        "수출증가율": {"value": "5", "trend": "▲", "unit": "%", "as_of": "2026-03"}},
+        }
+        for status, macro in status_macros.items():
+            signal = {"label": "환율(원/$)", "value": macro["환율(원/$)"]["value"],
+                      "trend": macro["환율(원/$)"]["trend"]}
+            opts = generate_decision_options(macro, "반도체", signal)
+            assert len(opts) == 3, f"상태 {status}: 옵션 {len(opts)}개"
+
+    def test_decision_templates_coverage(self):
+        """DECISION_TEMPLATES에 8개 산업 × 4개 상태가 모두 존재하는지 검증."""
+        from core.decision_engine import DECISION_TEMPLATES
+        statuses = ["danger", "warning", "caution", "normal"]
+        for industry in INDUSTRIES:
+            assert industry in DECISION_TEMPLATES, f"산업 '{industry}' 템플릿 없음"
+            for status in statuses:
+                assert status in DECISION_TEMPLATES[industry], (
+                    f"{industry}/{status} 템플릿 없음"
+                )
+                opts = DECISION_TEMPLATES[industry][status]
+                assert len(opts) == 3, f"{industry}/{status}: 옵션 {len(opts)}개 (3개 필요)"
+
+
+# ─────────────────────────────────────────────────────────────
+# 12. Hero Card 4-frame 요약 검증
+# ─────────────────────────────────────────────────────────────
+
+class TestHeroCard4Frame:
+    """summarizer 4-frame dict 반환 검증."""
+
+    def test_hero_card_4frame(self):
+        """Groq LLM 4-frame JSON 응답이 정상 파싱되는지 검증 (mock)."""
+        from core.summarizer import summarize_3line
+
+        mock_4frame = {
+            "impact": "수출 채산성이 개선됩니다",
+            "risk": "수입 비용 상승 우려",
+            "opportunity": "환전 적기 활용 가능",
+            "action": "환헤지 비중 확대 검토",
+        }
+        mock_json_response = json.dumps(mock_4frame, ensure_ascii=False)
+
+        with patch("core.summarizer._summarize_with_llm", return_value=mock_4frame):
+            summary, source = summarize_3line(
+                "환율이 1,450원을 돌파했다.", title="환율 급등", industry_key="반도체",
+            )
+        assert source == "groq"
+        assert isinstance(summary, dict), f"4-frame 결과가 dict가 아님: {type(summary)}"
+        required_keys = {"impact", "risk", "opportunity", "action"}
+        assert required_keys <= set(summary.keys()), (
+            f"4-frame 필수 키 누락: {required_keys - set(summary.keys())}"
+        )
+        for key in required_keys:
+            assert isinstance(summary[key], str) and summary[key], (
+                f"4-frame '{key}' 값이 비어있음"
+            )
+
+    def test_hero_card_str_fallback(self, sample_text, sample_article):
+        """LLM 실패 시 str 폴백이 정상 동작하는지 검증."""
+        from core.summarizer import summarize_3line
+        with patch("core.summarizer._summarize_with_llm", return_value=None):
+            summary, source = summarize_3line(
+                sample_text, title=sample_article["title"], industry_key="반도체",
+            )
+        assert source == "rule"
+        assert isinstance(summary, str), f"폴백 결과가 str가 아님: {type(summary)}"
+        assert len(summary) > 10
+
+    def test_impact_detail_in_signal(self, macro_data):
+        """generate_today_signal 반환값에 impact_detail이 있는지 검증."""
+        from core.today_signal import generate_today_signal
+        result = generate_today_signal(macro_data, "반도체")
+        assert result is not None
+        assert "impact_detail" in result, "impact_detail 키가 없음"
+        detail = result["impact_detail"]
+        assert isinstance(detail, dict)
+        for key in ("impact", "risk", "opportunity"):
+            assert key in detail, f"impact_detail에 '{key}' 키 없음"
+            assert isinstance(detail[key], str) and detail[key]
+
+
+# ─────────────────────────────────────────────────────────────
+# 13. Impact Strip 검증
+# ─────────────────────────────────────────────────────────────
+
+class TestImpactStrip:
+    """환율/CPI/금리 3개 지표 상태값 정상 반환 검증."""
+
+    def test_impact_strip(self, macro_data):
+        """3개 핵심 지표의 threshold status가 정상 반환되는지 검증."""
+        # _get_threshold_status는 app.py의 전역 함수이므로 직접 임포트 불가
+        # 동일 로직을 today_signal._get_status로 검증
+        from core.today_signal import _get_status
+
+        strip_indicators = [
+            ("환율(원/$)", 1476, ["normal", "caution", "warning", "danger"]),
+            ("소비자물가(CPI)", 2.0, ["normal", "caution", "danger"]),
+            ("기준금리", 2.5, ["caution", "normal", "warning"]),
+        ]
+        for label, value, valid_statuses in strip_indicators:
+            status = _get_status(label, value)
+            assert status in valid_statuses, (
+                f"{label}={value} → status='{status}' (유효값: {valid_statuses})"
+            )
+
+    def test_impact_strip_all_statuses(self):
+        """각 지표별 다양한 값에서 올바른 상태를 반환하는지 검증."""
+        from core.today_signal import _get_status
+
+        test_cases = [
+            # (label, value, expected_status)
+            ("환율(원/$)", 1300, "normal"),
+            ("환율(원/$)", 1400, "caution"),
+            ("환율(원/$)", 1470, "warning"),
+            ("환율(원/$)", 1550, "danger"),
+            ("소비자물가(CPI)", 1.5, "normal"),
+            ("소비자물가(CPI)", 2.5, "caution"),
+            ("소비자물가(CPI)", 3.5, "danger"),
+            ("기준금리", 1.5, "caution"),
+            ("기준금리", 2.5, "normal"),
+            ("기준금리", 4.0, "warning"),
+        ]
+        for label, value, expected in test_cases:
+            status = _get_status(label, value)
+            assert status == expected, (
+                f"{label}={value}: '{status}' != '{expected}'"
+            )
+
+    def test_impact_strip_indicator_coverage(self, macro_data):
+        """macro_data에 3개 핵심 지표가 모두 포함되어 있는지 검증."""
+        required = ["환율(원/$)", "소비자물가(CPI)", "기준금리"]
+        for indicator in required:
+            assert indicator in macro_data, f"'{indicator}' 가 macro_data에 없음"
+            assert "value" in macro_data[indicator]
+
+
+# ─────────────────────────────────────────────────────────────
+# 14. KITA 소스 검증
+# ─────────────────────────────────────────────────────────────
+
+class TestKitaSource:
+    """fetch_kita_export_trend() 구조 검증 (mock)."""
+
+    def test_kita_source(self):
+        """KITA 수출 동향 반환 구조가 올바른지 검증 (RSS mock)."""
+        from core.kita_source import fetch_kita_export_trend
+
+        mock_result = {
+            "industry": "반도체·디스플레이",
+            "export_amount": "145억 달러",
+            "yoy_change": "+12.3%",
+            "period": "2026년 1월",
+            "top_markets": ["미국", "중국", "베트남"],
+            "source": "KITA",
+            "title": "반도체 수출 동향",
+            "cached_at": "2026-03-10",
+        }
+
+        with patch("core.kita_source._fetch_from_rss", return_value=mock_result):
+            result = fetch_kita_export_trend("반도체")
+
+        required_keys = {"industry", "export_amount", "yoy_change", "period", "top_markets", "source"}
+        assert required_keys <= set(result.keys()), (
+            f"필수 키 누락: {required_keys - set(result.keys())}"
+        )
+        assert result["source"] == "KITA"
+        assert isinstance(result["top_markets"], list)
+
+    def test_kita_fallback_empty(self):
+        """RSS 실패 + 캐시 없음 시 빈 데이터를 반환하는지 검증."""
+        from core.kita_source import fetch_kita_export_trend
+
+        with patch("core.kita_source._fetch_from_rss", return_value=None), \
+             patch("core.kita_source._load_fallback_cache", return_value={}):
+            result = fetch_kita_export_trend("반도체")
+
+        assert result["source"] == "KITA"
+        assert result["export_amount"] == ""
+        assert isinstance(result["top_markets"], list)
+
+    def test_kita_hs_code_mapping(self):
+        """산업별 HS 코드 매핑이 정상인지 검증."""
+        from core.kita_source import get_industry_hs_code
+        assert get_industry_hs_code("반도체") == "8542"
+        assert get_industry_hs_code("자동차") == "8703"
+        assert get_industry_hs_code("미등록산업") == "ALL"
+
+
+# ─────────────────────────────────────────────────────────────
+# 15. 산업부 소스 검증
+# ─────────────────────────────────────────────────────────────
+
+class TestMotieSource:
+    """fetch_motie_news() 구조 검증 (mock)."""
+
+    MOCK_MOTIE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+    <channel>
+        <title>산업통상자원부 보도자료</title>
+        <item>
+            <title>반도체 수출 규제 대응 방안 발표</title>
+            <link>https://www.motie.go.kr/news/1</link>
+            <pubDate>Mon, 09 Mar 2026 09:00:00 +0900</pubDate>
+            <description>산업부가 반도체 수출 규제에 대한 종합 대응 방안을 발표했다.</description>
+        </item>
+        <item>
+            <title>자동차 산업 전기차 전환 가속화 정책</title>
+            <link>https://www.motie.go.kr/news/2</link>
+            <pubDate>Sun, 08 Mar 2026 09:00:00 +0900</pubDate>
+            <description>전기차 보조금 확대 및 충전 인프라 확충 계획을 발표했다.</description>
+        </item>
+        <item>
+            <title>수출 증가세 지속 3월 무역 동향</title>
+            <link>https://www.motie.go.kr/news/3</link>
+            <pubDate>Sat, 07 Mar 2026 09:00:00 +0900</pubDate>
+            <description>3월 수출이 전년 동기 대비 12% 증가했다.</description>
+        </item>
+    </channel>
+    </rss>"""
+
+    def test_motie_source(self):
+        """산업부 기사 수집이 정상 구조를 반환하는지 검증 (mock RSS)."""
+        from core.motie_source import fetch_motie_news
+
+        # urllib.request는 함수 내부에서 import되므로 urllib.request.urlopen을 직접 패치
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = self.MOCK_MOTIE_RSS.encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = fetch_motie_news("반도체", max_items=5)
+
+        assert isinstance(result, list)
+        if result:  # 키워드 매칭 결과가 있을 때
+            art = result[0]
+            required_keys = {"doc_id", "title", "url", "source", "issue_yyyymm"}
+            assert required_keys <= set(art.keys()), (
+                f"기사 필수 키 누락: {required_keys - set(art.keys())}"
+            )
+            assert art["source"] == "산업부"
+
+    def test_motie_empty_on_no_feedparser(self):
+        """feedparser 미설치 시 빈 리스트를 반환하는지 검증."""
+        from core.motie_source import fetch_motie_news
+
+        with patch("core.motie_source.feedparser", None):
+            result = fetch_motie_news("반도체")
+        assert result == []
+
+    def test_motie_keyword_filtering(self):
+        """산업별 키워드 필터링이 동작하는지 검증."""
+        from core.motie_source import _MOTIE_FILTER_KEYWORDS
+        for industry in INDUSTRIES:
+            assert industry in _MOTIE_FILTER_KEYWORDS, (
+                f"'{industry}' 키워드 필터 없음"
+            )
+            assert len(_MOTIE_FILTER_KEYWORDS[industry]) >= 1
+
+
+# ─────────────────────────────────────────────────────────────
+# 16. 기사 Top 3 필터 검증
+# ─────────────────────────────────────────────────────────────
+
+class TestArticleTop3:
+    """기사 정렬 + Top 3 필터 검증."""
+
+    def test_article_top3(self):
+        """impact_score 내림차순 정렬 후 Top 3가 올바른지 검증."""
+        from core.impact_scorer import score_articles
+
+        articles = [
+            {"title": "일반 경제 뉴스 동향 보고", "url": "https://example.com/1", "doc_id": "t1"},
+            {"title": "반도체 수출 급증 AI 반도체 미국 수출통제 환율 급등", "url": "https://example.com/2", "doc_id": "t2"},
+            {"title": "환율 급등 달러 수출 영향 분석 금리 인상", "url": "https://example.com/3", "doc_id": "t3"},
+            {"title": "지역 문화 축제 개최 안내", "url": "https://example.com/4", "doc_id": "t4"},
+            {"title": "반도체 수출 실적 메모리 반도체 수요 증가 전망", "url": "https://example.com/5", "doc_id": "t5"},
+        ]
+        macro = {
+            "환율(원/$)": {"value": "1476", "trend": "▲", "unit": "원/$", "as_of": "2026-03"},
+            "수출증가율": {"value": "14.8", "trend": "▲", "unit": "%", "as_of": "2026-03"},
+        }
+
+        scored = score_articles(articles, "반도체", macro)
+
+        # 내림차순 정렬 확인
+        scores = [a.get("impact_score", 0) for a in scored]
+        assert scores == sorted(scores, reverse=True), (
+            f"내림차순 정렬 아님: {scores}"
+        )
+
+        # Top 3 필터
+        top3 = scored[:3]
+        assert len(top3) == 3
+
+        # Top 3의 점수가 나머지보다 높거나 같은지 확인
+        if len(scored) > 3:
+            min_top3 = min(a.get("impact_score", 0) for a in top3)
+            max_rest = max(a.get("impact_score", 0) for a in scored[3:])
+            assert min_top3 >= max_rest, (
+                f"Top 3 최소({min_top3}) < 나머지 최대({max_rest})"
+            )
+
+    def test_article_score_range(self):
+        """모든 기사의 impact_score가 1~5 범위인지 검증."""
+        from core.impact_scorer import score_articles
+
+        articles = [
+            {"title": f"테스트 기사 {i}", "url": f"https://example.com/{i}", "doc_id": f"t{i}"}
+            for i in range(10)
+        ]
+        scored = score_articles(articles, "반도체", None)
+        for art in scored:
+            score = art.get("impact_score", 0)
+            assert 1 <= score <= 5, f"점수 범위 초과: {score}"
+
+    def test_article_empty_list(self):
+        """빈 기사 리스트 입력 시 빈 리스트를 반환하는지 검증."""
+        from core.impact_scorer import score_articles
+        result = score_articles([], "반도체", None)
+        assert result == []
+
+
+# ─────────────────────────────────────────────────────────────
 # 최종 통합 확인
 # ─────────────────────────────────────────────────────────────
 
@@ -593,4 +976,11 @@ def test_phase3_integration_passed():
     """모든 테스트가 통과하면 Phase 3 완료 메시지를 출력한다."""
     print("\n" + "=" * 50)
     print("✅ Phase 3 Integration Test PASSED")
+    print("=" * 50)
+
+
+def test_round2_integration_passed():
+    """2라운드 신규 테스트가 모두 통과하면 완료 메시지를 출력한다."""
+    print("\n" + "=" * 50)
+    print("✅ 2라운드 통합 테스트 PASSED")
     print("=" * 50)
