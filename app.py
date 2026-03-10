@@ -112,6 +112,39 @@ div[data-testid="stMarkdownContainer"] > div:hover {
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 header[data-testid="stHeader"] { background: transparent !important; }
+
+/* ── Download Button — Primary CTA 스타일 ─── */
+.stDownloadButton > button {
+    background: linear-gradient(135deg, #5B5FEE 0%, #7C3AED 100%) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+    padding: 10px 20px !important;
+    transition: all 0.2s ease !important;
+    box-shadow: 0 2px 8px rgba(91,95,238,0.3) !important;
+}
+.stDownloadButton > button:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 16px rgba(91,95,238,0.45) !important;
+    opacity: 0.95 !important;
+}
+.stDownloadButton > button:active {
+    transform: translateY(0px) !important;
+}
+
+/* ── 섹션 구분선 — lavender tint ─── */
+[data-testid="stHorizontalRule"] hr {
+    margin: 24px 0 !important;
+    border-top: 1px solid #C8C9FF !important;
+    opacity: 0.8 !important;
+}
+
+/* ── 섹션 간 상단 여백 통일 ─── */
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlockBorderWrapper"] {
+    margin-top: 8px !important;
+}
 </style>
 """)
 
@@ -3202,6 +3235,96 @@ def _render_industry_impact_ranking(macro_data: dict) -> None:
 # ══════════════════════════════════════════════════════
 # 4-A. 오늘의 핵심 신호 카드
 # ══════════════════════════════════════════════════════
+
+def _section_header(title: str, subtitle: str = "", number: str = "") -> None:
+    """통일된 섹션 헤더 렌더링 — accent bar + 번호 뱃지 + 서브타이틀."""
+    badge_html = (
+        f'<span style="background:#5B5FEE;color:white;min-width:24px;height:24px;'
+        f'border-radius:50%;display:inline-flex;align-items:center;'
+        f'justify-content:center;font-size:11px;font-weight:800;'
+        f'flex-shrink:0;margin-right:8px">{number}</span>'
+        if number else ""
+    )
+    sub_html = (
+        f'<div style="font-size:12px;color:#64748b;margin-top:3px">{subtitle}</div>'
+        if subtitle else ""
+    )
+    st.html(f"""
+    <div style="display:flex;align-items:flex-start;
+                margin-top:4px;margin-bottom:12px;
+                padding-left:14px;
+                border-left:4px solid #5B5FEE;
+                font-family:'Inter',sans-serif">
+      <div>
+        <div style="display:flex;align-items:center">
+          {badge_html}
+          <span style="font-size:18px;font-weight:800;color:#1E1B4B">{title}</span>
+        </div>
+        {sub_html}
+      </div>
+    </div>
+    """)
+
+def _render_kpi_section_card(kpi_items: list) -> None:
+    """KPI 4종을 white card 그리드로 렌더링 (st.metric 대체)."""
+    cards_html = ""
+    for label, data in kpi_items:
+        val    = data.get("value", "—")
+        unit   = data.get("unit", "")
+        trend  = data.get("trend", "→")
+        prev   = data.get("prev_value", "")
+        # delta 계산
+        try:
+            _v = float(str(val).replace(",", "").replace("+", ""))
+            _p = float(str(prev).replace(",", "").replace("+", ""))
+            _delta = round(_v - _p, 2)
+            _delta_color = "#dc2626" if _delta > 0 else "#2563eb" if _delta < 0 else "#6b7280"
+            delta_html = (
+                f'<div style="margin-top:6px;font-size:12px;font-weight:600;color:{_delta_color}">'
+                f'{_delta:+.2f} {unit}</div>'
+            )
+        except Exception:
+            delta_html = ""
+        trend_color = "#dc2626" if trend == "▲" else "#2563eb" if trend == "▼" else "#6b7280"
+        # threshold 상태 배지
+        _status, _, _status_label = _get_threshold_status(label, str(val))
+        _badge_map = {
+            "danger":  ('<span style="background:#fef2f2;color:#dc2626;font-size:10px;'
+                        'font-weight:700;padding:2px 7px;border-radius:8px;'
+                        'border:1px solid #fecaca">⚠ 위험</span>'),
+            "warning": ('<span style="background:#fff7ed;color:#f97316;font-size:10px;'
+                        'font-weight:700;padding:2px 7px;border-radius:8px;'
+                        'border:1px solid #fed7aa">⚠ 경고</span>'),
+            "caution": ('<span style="background:#fefce8;color:#ca8a04;font-size:10px;'
+                        'font-weight:700;padding:2px 7px;border-radius:8px;'
+                        'border:1px solid #fde68a">주의</span>'),
+        }
+        badge_html = _badge_map.get(_status, "")
+        _fmt_val = _fmt_value(label, val)
+        cards_html += f"""
+        <div style="background:#ffffff;border:1px solid #E2E8F0;border-radius:14px;
+                    padding:20px 18px 16px;text-align:center;
+                    box-shadow:0 1px 4px rgba(0,0,0,0.05);
+                    transition:box-shadow 0.2s">
+          <div style="font-size:12px;font-weight:600;color:#64748b;
+                      margin-bottom:10px;letter-spacing:0.3px">{label}</div>
+          <div style="font-size:28px;font-weight:800;color:#1E1B4B;line-height:1">
+            {_fmt_val}
+          </div>
+          <div style="font-size:13px;color:#64748b;margin-top:2px">
+            {unit}&nbsp;<span style="color:{trend_color};font-size:16px">{trend}</span>
+          </div>
+          {delta_html}
+          <div style="margin-top:8px">{badge_html}</div>
+        </div>"""
+
+    st.html(f"""
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;
+                margin-bottom:8px;font-family:'Inter',sans-serif">
+      {cards_html}
+    </div>
+    """)
+
 def _render_today_signal(industry_key: str) -> None:
     """탭 위에 '오늘의 핵심 경제 신호' Hero Card 렌더링."""
     signal = generate_today_signal(_MACRO, industry_key)
@@ -3666,32 +3789,12 @@ def render_ui() -> None:
     # ── [1] 오늘의 핵심 신호는 위에서 이미 렌더링됨 (_render_today_signal) ──
 
     # ── [2] 핵심 지표 KPI 카드 4종 ──────────────────────────────
-    st.header("📊 핵심 지표 KPI")
+    _section_header("📊 핵심 지표 KPI", "ECOS 한국은행 공식 거시경제 지표", "2")
     if _MACRO:
         _kpi_keys = ["환율(원/$)", "소비자물가(CPI)", "수출증가율", "기준금리"]
         _kpi_items = [(k, _MACRO[k]) for k in _kpi_keys if k in _MACRO]
         if _kpi_items:
-            _kpi_cols = st.columns(4)
-            for (_kpi_label, _kpi_data), _kpi_col in zip(_kpi_items, _kpi_cols):
-                with _kpi_col:
-                    _kpi_val = _kpi_data.get("value", "")
-                    _kpi_unit = _kpi_data.get("unit", "")
-                    _kpi_trend = _kpi_data.get("trend", "→")
-                    _kpi_prev = _kpi_data.get("prev_value", "")
-                    # Calculate delta for st.metric
-                    try:
-                        _kpi_v = float(str(_kpi_val).replace(",", "").replace("+", ""))
-                        _kpi_p = float(str(_kpi_prev).replace(",", "").replace("+", ""))
-                        _kpi_delta = round(_kpi_v - _kpi_p, 2)
-                        _kpi_delta_str = f"{_kpi_delta:+.2f} {_kpi_unit}"
-                    except (ValueError, TypeError):
-                        _kpi_delta_str = None
-                    _kpi_display = f"{_fmt_value(_kpi_label, _kpi_val)} {_kpi_unit}"
-                    st.metric(
-                        label=_kpi_label,
-                        value=_kpi_display,
-                        delta=_kpi_delta_str,
-                    )
+            _render_kpi_section_card(_kpi_items)
         # Macro validation warnings
         for _m_label, _m_data in _MACRO.items():
             _m_warn = _validate_macro_item(_m_label, _m_data)
@@ -3789,7 +3892,7 @@ def render_ui() -> None:
     st.divider()
 
     # ── [3] 산업별 핵심 변수 카드 ────────────────────────────
-    st.header("🔬 산업별 핵심 변수")
+    _section_header("🔬 산업별 핵심 변수", "선택 산업의 경제 민감 변수 실시간 모니터링", "3")
     _render_industry_variable_card(_sel_ind, st.session_state.get("docs", []))
 
     st.divider()
@@ -3849,7 +3952,7 @@ def render_ui() -> None:
     st.divider()
 
     # ── [4] 주요 기사 목록 (임팩트 스코어 내림차순) ──────────
-    st.header("📰 주요 기사 목록")
+    _section_header("📰 주요 기사 목록", "KDI 나라경제 + 뉴스 RSS — 임팩트 스코어 내림차순", "4")
 
     # 기사 자동 수집 (session state 초기화)
     st.session_state.setdefault("docs", [])
@@ -4133,7 +4236,7 @@ def render_ui() -> None:
     # [6] ⚙️ 워치리스트 설정
     # ══════════════════════════════════════════════════════════════
     st.divider()
-    st.header("⚙️ 워치리스트 설정")
+    _section_header("⚙️ 워치리스트 설정", "임계값 초과 시 이메일 알림", "5")
     st.caption("거시지표가 설정한 임계값을 초과하면 이메일 알림을 받습니다.")
 
     try:
@@ -4181,7 +4284,28 @@ def render_ui() -> None:
                     "이메일": "✅" if _it.get("notify_email") else "❌",
                     "마지막 발동": _it.get("last_triggered") or "—",
                 })
-            st.dataframe(pd.DataFrame(_wl_rows), use_container_width=True, hide_index=True)
+            _wl_df = pd.DataFrame(_wl_rows)
+            # 임계값 컬럼 숫자 포맷 (이미 문자열이면 그대로 유지)
+            try:
+                _wl_df["임계값"] = _wl_df["임계값"].apply(
+                    lambda x: f"{float(x):,.1f}" if str(x).replace('.','').replace(',','').lstrip('-').isdigit() else x
+                )
+            except Exception:
+                pass
+            st.dataframe(
+                _wl_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "지표":       st.column_config.TextColumn("지표", width="medium"),
+                    "조건":       st.column_config.TextColumn("조건", width="small"),
+                    "임계값":     st.column_config.TextColumn("임계값 ⚡", width="small"),
+                    "관련 산업":  st.column_config.TextColumn("산업", width="medium"),
+                    "이메일":     st.column_config.TextColumn("📧", width="small"),
+                    "마지막 발동":st.column_config.TextColumn("마지막 발동", width="medium"),
+                },
+                height=min(55 + len(_wl_rows) * 45, 320),
+            )
 
             with st.expander("🗑️ 항목 삭제"):
                 _wl_del_options = {
