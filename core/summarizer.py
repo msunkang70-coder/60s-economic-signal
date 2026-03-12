@@ -681,6 +681,24 @@ def _rule_based_enhanced_summary(text: str, title: str, industry_key: str) -> di
     }
 
 
+def _verify_body_title_relevance(body_text: str, title: str) -> bool:
+    """본문이 제목과 관련 있는지 최소 검증."""
+    if not title or not body_text:
+        return False
+    import re as _re
+    # 제목에서 핵심 명사 추출 (2글자 이상 한글 단어)
+    title_words = set(_re.findall(r'[가-힣]{2,}', title))
+    # 불용어 제거
+    stopwords = {"우리", "이번", "대한", "관련", "통해", "위해", "대비", "이상", "이하", "현재"}
+    title_words -= stopwords
+    if not title_words:
+        return True  # 검증 불가 시 통과
+    # 본문에 제목 키워드 최소 2개 이상 포함 필요
+    body_lower = body_text[:2000]
+    match_count = sum(1 for w in title_words if w in body_lower)
+    return match_count >= min(2, len(title_words))
+
+
 def summarize_3line(
     text: str,
     title: str = "",
@@ -715,6 +733,17 @@ def summarize_3line(
                 return _entry["summary"], "cache"
         except Exception:
             pass
+
+    # ── 본문-제목 정합성 검증 ──
+    if not _verify_body_title_relevance(text, _title_str):
+        print(f"[summarizer] ⚠️ 본문-제목 불일치 감지: '{_title_str[:30]}...'")
+        return {
+            "impact": f"'{_title_str[:40]}' 관련 정책 변화가 {_resolve_industry_label(industry_key)} 수출에 영향 예상",
+            "risk": "상세 본문 확인 필요 — 원문 링크에서 전문을 검토하세요",
+            "opportunity": "정책 방향에 따른 선제적 대응 기회 모색 필요",
+            "action": "원문 기사를 직접 확인하고 산업 영향도를 자체 평가하세요",
+            "headline": _generate_headline(_title_str),
+        }, "title_fallback"
 
     # ── LLM 시도 ──
     llm_result = _summarize_with_llm(text, _title_str, industry_key=industry_key)

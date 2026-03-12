@@ -158,7 +158,8 @@ class TestSummarizer:
         """규칙 기반 요약이 비어있지 않은 결과를 반환하는지 검증."""
         from core.summarizer import summarize_3line
         # LLM 호출을 mock으로 차단 → rule-based fallback
-        with patch("core.summarizer._summarize_with_llm", return_value=None):
+        with patch("core.summarizer._summarize_with_llm", return_value=None), \
+             patch("core.summarizer._verify_body_title_relevance", return_value=True):
             summary, source = summarize_3line(
                 sample_text,
                 title=sample_article["title"],
@@ -172,7 +173,8 @@ class TestSummarizer:
     def test_summarize_per_industry(self, sample_text, sample_article, industry):
         """산업별 요약 생성이 에러 없이 완료되는지 검증."""
         from core.summarizer import summarize_3line
-        with patch("core.summarizer._summarize_with_llm", return_value=None):
+        with patch("core.summarizer._summarize_with_llm", return_value=None), \
+             patch("core.summarizer._verify_body_title_relevance", return_value=True):
             summary, source = summarize_3line(
                 sample_text,
                 title=sample_article["title"],
@@ -710,7 +712,8 @@ class TestHeroCard4Frame:
         mock_json_response = json.dumps(mock_4frame, ensure_ascii=False)
 
         with patch("core.summarizer._summarize_with_llm", return_value=mock_4frame), \
-             patch("core.summarizer._load_summary_cache", return_value={}):
+             patch("core.summarizer._load_summary_cache", return_value={}), \
+             patch("core.summarizer._verify_body_title_relevance", return_value=True):
             summary, source = summarize_3line(
                 "환율이 1,450원을 돌파했다.", title="환율 급등", industry_key="반도체",
             )
@@ -728,7 +731,8 @@ class TestHeroCard4Frame:
     def test_hero_card_str_fallback(self, sample_text, sample_article):
         """LLM 실패 시 str 폴백이 정상 동작하는지 검증."""
         from core.summarizer import summarize_3line
-        with patch("core.summarizer._summarize_with_llm", return_value=None):
+        with patch("core.summarizer._summarize_with_llm", return_value=None), \
+             patch("core.summarizer._verify_body_title_relevance", return_value=True):
             summary, source = summarize_3line(
                 sample_text, title=sample_article["title"], industry_key="반도체",
             )
