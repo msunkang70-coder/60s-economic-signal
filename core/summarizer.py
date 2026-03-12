@@ -629,12 +629,25 @@ def _generate_headline(title: str, text: str = "") -> str:
 def _validate_summary_quality(summary_dict: dict) -> bool:
     """요약 품질 최소 기준 검증. 통과 못하면 재시도 또는 폴백."""
     import re as _re
-    for key in ["impact", "risk", "opportunity", "action"]:
+    fields = ["impact", "risk", "opportunity", "action"]
+    texts = []
+    for key in fields:
         text = summary_dict.get(key, "")
+        # 최소 길이 30자
         if len(text) < 30:
             return False
+        # 숫자가 1개 이상 포함되어야 함
         if not _re.search(r'\d', text):
             return False
+        texts.append(text)
+
+    # 필드 간 중복 검사 (동일 텍스트 또는 앞 20자 동일이면 실패)
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            if texts[i] == texts[j]:
+                return False
+            if len(texts[i]) >= 20 and texts[i][:20] == texts[j][:20]:
+                return False
     return True
 
 
