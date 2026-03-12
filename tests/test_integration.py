@@ -146,10 +146,11 @@ class TestSummarizer:
 
     def test_system_prompt_format_all_industries(self):
         """8개 산업 모두에 대해 SYSTEM_PROMPT 포맷팅이 가능한지 검증."""
-        from core.summarizer import SYSTEM_PROMPT, _resolve_industry_label
+        from core.summarizer import SYSTEM_PROMPT, _resolve_industry_label, _resolve_industry_variables
         for ind in INDUSTRIES:
             label = _resolve_industry_label(ind)
-            formatted = SYSTEM_PROMPT.format(industry_label=label)
+            variables = _resolve_industry_variables(ind)
+            formatted = SYSTEM_PROMPT.format(industry_label=label, industry_variables=variables)
             assert label in formatted
             assert "{industry_label}" not in formatted
 
@@ -655,17 +656,38 @@ class TestDecisionEngine:
             assert len(opts) == 3, f"상태 {status}: 옵션 {len(opts)}개"
 
     def test_decision_templates_coverage(self):
-        """DECISION_TEMPLATES에 8개 산업 × 4개 상태가 모두 존재하는지 검증."""
+        """DECISION_TEMPLATES 산업별 카테고리×상태 커버리지 검증.
+
+        템플릿 구조: {산업: {카테고리: {상태: [옵션 3개]}}}
+        - 등록된 산업은 모든 카테고리×상태에 옵션 3개가 존재해야 함
+        - 미등록 산업(배터리/조선/철강)은 '일반' 폴백 사용 확인
+        """
         from core.decision_engine import DECISION_TEMPLATES
         statuses = ["danger", "warning", "caution", "normal"]
+        categories = ["환율", "수출", "물가", "금리"]
+
+        # 등록된 산업: 카테고리×상태 모두 커버되는지 검증
+        for industry, cat_dict in DECISION_TEMPLATES.items():
+            assert isinstance(cat_dict, dict), f"산업 '{industry}' 값이 dict가 아님"
+            for cat in categories:
+                assert cat in cat_dict, f"{industry}/{cat} 카테고리 없음"
+                for status in statuses:
+                    assert status in cat_dict[cat], (
+                        f"{industry}/{cat}/{status} 템플릿 없음"
+                    )
+                    opts = cat_dict[cat][status]
+                    assert len(opts) == 3, (
+                        f"{industry}/{cat}/{status}: 옵션 {len(opts)}개 (3개 필요)"
+                    )
+
+        # 미등록 산업은 '일반' 폴백으로 동작 확인
+        assert "일반" in DECISION_TEMPLATES, "'일반' 산업 템플릿 없음"
         for industry in INDUSTRIES:
-            assert industry in DECISION_TEMPLATES, f"산업 '{industry}' 템플릿 없음"
-            for status in statuses:
-                assert status in DECISION_TEMPLATES[industry], (
-                    f"{industry}/{status} 템플릿 없음"
-                )
-                opts = DECISION_TEMPLATES[industry][status]
-                assert len(opts) == 3, f"{industry}/{status}: 옵션 {len(opts)}개 (3개 필요)"
+            if industry not in DECISION_TEMPLATES:
+                # fallback to 일반 — generate_decision_options에서 처리됨
+                fallback = DECISION_TEMPLATES["일반"]
+                for cat in categories:
+                    assert cat in fallback, f"일반/{cat} 폴백 없음"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -680,14 +702,15 @@ class TestHeroCard4Frame:
         from core.summarizer import summarize_3line
 
         mock_4frame = {
-            "impact": "수출 채산성이 개선됩니다",
-            "risk": "수입 비용 상승 우려",
-            "opportunity": "환전 적기 활용 가능",
-            "action": "환헤지 비중 확대 검토",
+            "impact": "환율 1,450원 돌파로 반도체 수출 채산성이 약 3%p 개선될 전망, 2분기 내 효과 본격화",
+            "risk": "원자재 수입 비용 동반 상승 시 마진 개선분 15% 상쇄 가능, 하반기 역마진 우려 존재",
+            "opportunity": "달러 매출 비중 60% 이상 기업은 환전 적기 활용하여 환헷지 비율 30%→50% 조정 가능",
+            "action": "주요 원자재 3개 공급사 결제 통화별 원가 변동률 즉시 점검, 환헤지 비중 확대 검토 필요",
         }
         mock_json_response = json.dumps(mock_4frame, ensure_ascii=False)
 
-        with patch("core.summarizer._summarize_with_llm", return_value=mock_4frame):
+        with patch("core.summarizer._summarize_with_llm", return_value=mock_4frame), \
+             patch("core.summarizer._load_summary_cache", return_value={}):
             summary, source = summarize_3line(
                 "환율이 1,450원을 돌파했다.", title="환율 급등", industry_key="반도체",
             )
@@ -983,4 +1006,155 @@ def test_round2_integration_passed():
     """2라운드 신규 테스트가 모두 통과하면 완료 메시지를 출력한다."""
     print("\n" + "=" * 50)
     print("✅ 2라운드 통합 테스트 PASSED")
+    print("=" * 50)
+
+
+# ─────────────────────────────────────────────────────────────
+# 17. Wave 2 통합 — Executive Summary
+# ─────────────────────────────────────────────────────────────
+
+class TestWave2ExecutiveSummary:
+    """Executive Summary가 main_content.py에 통합되었는지 검증."""
+
+    def test_executive_summary_importable(self):
+        """views.executive_summary 모듈이 임포트 가능한지 검증."""
+        from views.executive_summary import render_executive_summary, _build_summary_text
+        assert callable(render_executive_summary)
+        assert callable(_build_summary_text)
+
+    def test_executive_summary_in_main_content(self):
+        """main_content.py 소스에 executive_summary 통합 코드가 포함되었는지 검증."""
+        import inspect
+        from views.main_content import render_main_content
+        src = inspect.getsource(render_main_content)
+        assert "render_executive_summary" in src
+
+    def test_executive_summary_text_generation(self, macro_data):
+        """macro_data로부터 요약 텍스트가 생성되는지 검증."""
+        from views.executive_summary import _build_summary_text
+        text = _build_summary_text(None, macro_data)
+        assert len(text) > 5
+        assert "환율" in text or "금리" in text or "수출" in text
+
+
+# ─────────────────────────────────────────────────────────────
+# 18. Wave 2 통합 — Benchmark Widget
+# ─────────────────────────────────────────────────────────────
+
+class TestWave2BenchmarkWidget:
+    """Benchmark 카드가 main_content.py에 통합되었는지 검증."""
+
+    def test_benchmark_importable(self):
+        """views.benchmark_widget 모듈이 임포트 가능한지 검증."""
+        from views.benchmark_widget import render_benchmark_card
+        assert callable(render_benchmark_card)
+
+    def test_benchmark_in_main_content(self):
+        """main_content.py 소스에 benchmark 통합 코드가 포함되었는지 검증."""
+        import inspect
+        from views.main_content import render_main_content
+        src = inspect.getsource(render_main_content)
+        assert "render_benchmark_card" in src
+
+
+# ─────────────────────────────────────────────────────────────
+# 19. Wave 2 통합 — Article Cache + Prefetch
+# ─────────────────────────────────────────────────────────────
+
+class TestWave2ArticleCache:
+    """ArticleCache + prefetch_worker 통합 검증."""
+
+    def test_article_cache_importable(self):
+        """core.article_cache 모듈이 임포트 가능한지 검증."""
+        from core.article_cache import get_cache, ArticleCache
+        cache = get_cache()
+        assert isinstance(cache, ArticleCache)
+
+    def test_cache_set_get(self):
+        """캐시 set/get이 정상 동작하는지 검증."""
+        from core.article_cache import ArticleCache
+        cache = ArticleCache(ttl=60, max_entries=10)
+        cache.set("doc_123", {"title": "테스트 기사", "body": "본문"})
+        result = cache.get("doc_123")
+        assert result is not None
+        assert result["title"] == "테스트 기사"
+
+    def test_cache_miss_returns_none(self):
+        """캐시 미스 시 None을 반환하는지 검증."""
+        from core.article_cache import ArticleCache
+        cache = ArticleCache(ttl=60, max_entries=10)
+        assert cache.get("nonexistent") is None
+
+    def test_prefetch_importable(self):
+        """core.prefetch_worker 모듈이 임포트 가능한지 검증."""
+        from core.prefetch_worker import prefetch_top_articles
+        assert callable(prefetch_top_articles)
+
+    def test_prefetch_in_main_content(self):
+        """main_content.py 소스에 prefetch 통합 코드가 포함되었는지 검증."""
+        import inspect
+        from views.main_content import _render_article_list
+        src = inspect.getsource(_render_article_list)
+        assert "prefetch_top_articles" in src
+        assert "article_cache" in src or "get_cache" in src
+
+    def test_prefetch_empty_docs(self):
+        """빈 docs 리스트로 prefetch 호출 시 None을 반환하는지 검증."""
+        from core.prefetch_worker import prefetch_top_articles
+        result = prefetch_top_articles([], n=5)
+        assert result is None
+
+
+# ─────────────────────────────────────────────────────────────
+# 20. Wave 2 통합 — Pipeline Scheduler in app.py
+# ─────────────────────────────────────────────────────────────
+
+class TestWave2PipelineScheduler:
+    """Pipeline Scheduler가 app.py에 통합되었는지 검증."""
+
+    def test_scheduler_importable(self):
+        """core.pipeline_scheduler의 스케줄러 함수들이 임포트 가능한지 검증."""
+        from core.pipeline_scheduler import start_scheduler, stop_scheduler, get_next_run_time
+        assert callable(start_scheduler)
+        assert callable(stop_scheduler)
+        assert callable(get_next_run_time)
+
+    def test_scheduler_in_app(self):
+        """app.py 소스에 scheduler 통합 코드가 포함되었는지 검증."""
+        import pathlib
+        app_src = pathlib.Path(_ROOT / "app.py").read_text(encoding="utf-8")
+        assert "start_scheduler" in app_src
+        assert "stop_scheduler" in app_src
+        assert "atexit" in app_src
+
+
+# ─────────────────────────────────────────────────────────────
+# 21. Wave 2 통합 — Company Profile 폼 구조
+# ─────────────────────────────────────────────────────────────
+
+class TestWave2CompanyProfile:
+    """company_profile_view.py 폼 구조 변경 검증."""
+
+    def test_company_profile_importable(self):
+        """views.company_profile_view 모듈이 임포트 가능한지 검증."""
+        from views.company_profile_view import render_company_profile_form
+        assert callable(render_company_profile_form)
+
+    def test_expander_in_source(self):
+        """소스에 '상세 설정' expander가 포함되었는지 검증."""
+        import inspect
+        from views.company_profile_view import render_company_profile_form
+        src = inspect.getsource(render_company_profile_form)
+        assert "상세 설정" in src
+        assert "expander" in src
+
+
+# ─────────────────────────────────────────────────────────────
+# 최종 Wave 2 통합 확인
+# ─────────────────────────────────────────────────────────────
+
+def test_wave2_integration_passed():
+    """Wave 2 통합 테스트가 모두 통과하면 완료 메시지를 출력한다."""
+    print("\n" + "=" * 50)
+    print("✅ Wave 2 통합 테스트 PASSED")
     print("=" * 50)

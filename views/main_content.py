@@ -626,13 +626,17 @@ def _render_article_list(industry_key: str, macro_data: dict) -> None:
 
                     # 원문 링크
                     _source_url = (
-                        _art_detail.get("source_url")
-                        or _art.get("source_url")
+                        _art_detail.get("url")
+                        or _art_detail.get("source_url")
                         or _art.get("url")
                         or _art.get("link", "")
                     )
-                    if _source_url:
+                    if not _source_url or _source_url.strip() == "":
+                        _source_url = None
+                    if _source_url and _source_url.startswith("http"):
                         st.markdown(f"\U0001f517 [원문 보기]({_source_url})")
+                    else:
+                        st.caption("📎 원문 링크 없음")
 
                     # 선택 문서로 저장 (리포트 다운로드용)
                     st.session_state.last_doc = _art

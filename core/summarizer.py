@@ -40,7 +40,7 @@ from core.utils import single_line
 SYSTEM_PROMPT = """
 당신은 한국 {industry_label} 수출기업 전략 브리핑 전문가입니다.
 {industry_variables}
-아래 경제 기사를 읽고 다음 4가지 관점에서 각 1문장(30자 이내)으로 분석하세요.
+아래 경제 기사를 읽고 다음 4가지 관점에서 각 1~2문장(50~80자)으로 분석하세요.
 
 📊 Impact(영향): 이 변화가 {industry_label} 수출기업에 미치는 직접적 영향
 📉 Risk(리스크): 주의해야 할 위험 요소
@@ -48,7 +48,7 @@ SYSTEM_PROMPT = """
 ✅ Action(즉시 행동): 지금 당장 확인해야 할 것 1가지
 
 [작성 규칙]
-- 각 항목에 구체적 수치, 기간, 또는 비율을 반드시 1개 이상 포함하세요
+- 각 항목은 반드시 다음을 포함: ①구체적 수치/비율 1개 이상 ②해당 산업에 미치는 영향의 방향(증가/감소/유지) ③시간 범위(즉시/단기/중기). 예시 수준의 구체성: '환율 1,480원 돌파로 반도체 수출 마진 약 3%p 개선 전망, 2분기 내 영향'
 - 추상적 표현("영향이 크다", "주의 필요") 대신 구체적 맥락을 기술하세요
 - 줄임표(…) 사용 금지
 
@@ -626,6 +626,61 @@ def _generate_headline(title: str, text: str = "") -> str:
     return title[:18] + "…"
 
 
+def _validate_summary_quality(summary_dict: dict) -> bool:
+    """요약 품질 최소 기준 검증. 통과 못하면 재시도 또는 폴백."""
+    import re as _re
+    for key in ["impact", "risk", "opportunity", "action"]:
+        text = summary_dict.get(key, "")
+        if len(text) < 30:
+            return False
+        if not _re.search(r'\d', text):
+            return False
+    return True
+
+
+def _rule_based_enhanced_summary(text: str, title: str, industry_key: str) -> dict:
+    """규칙 기반이지만 품질 보장하는 폴백 요약. 숫자 포함 문장 우선 추출."""
+    import re as _re
+    try:
+        from core.company_profile_v2 import get_profile
+    except ImportError:
+        get_profile = lambda k: {}
+
+    sentences = [s.strip() for s in _re.split(r'[.。!?\n]+', text) if len(s.strip()) > 10]
+    sentences_with_numbers = [s for s in sentences if _re.search(r'\d+[%조억원배p]', s)]
+    profile = get_profile(industry_key) if industry_key else {}
+    industry_keywords = profile.get("keywords", [])
+
+    neg_words = ["하락", "감소", "위험", "우려", "리스크", "손실", "악화", "둔화"]
+    pos_words = ["상승", "증가", "개선", "기회", "확대", "성장", "호전", "강화"]
+    action_words = ["점검", "확인", "검토", "조정", "대비", "모니터링", "준비"]
+
+    def _pick(keyword_list, fallback_idx=0):
+        for s in sentences_with_numbers:
+            if any(kw in s for kw in keyword_list):
+                return s[:80]
+        for s in sentences:
+            if any(kw in s for kw in keyword_list):
+                return s[:80]
+        if sentences_with_numbers:
+            return sentences_with_numbers[min(fallback_idx, len(sentences_with_numbers) - 1)][:80]
+        if sentences:
+            return sentences[min(fallback_idx, len(sentences) - 1)][:80]
+        return title[:80] if title else "분석 정보 부족"
+
+    impact_text = _pick(industry_keywords, 0)
+    risk_text = _pick(neg_words, 1)
+    opp_text = _pick(pos_words, 2)
+    action_text = _pick(action_words, 3)
+
+    return {
+        "impact": impact_text,
+        "risk": risk_text,
+        "opportunity": opp_text,
+        "action": action_text,
+    }
+
+
 def summarize_3line(
     text: str,
     title: str = "",
@@ -665,6 +720,25 @@ def summarize_3line(
     llm_result = _summarize_with_llm(text, _title_str, industry_key=industry_key)
     if llm_result:
         if isinstance(llm_result, dict):
+            # 품질 검증
+            if not _validate_summary_quality(llm_result):
+                print("[summarizer] 품질 검증 실패 — 재시도")
+                retry_result = _summarize_with_llm(
+                    text + "\n\n⚠️ 이전 응답이 너무 짧았습니다. 각 항목을 50자 이상, 구체적 수치 포함하여 다시 작성하세요.",
+                    _title_str,
+                    industry_key=industry_key,
+                )
+                if isinstance(retry_result, dict) and _validate_summary_quality(retry_result):
+                    llm_result = retry_result
+                    print("[summarizer] 재시도 품질 검증 통과")
+                else:
+                    # 2회 실패: 규칙 기반 폴백
+                    print("[summarizer] 재시도도 품질 미달 — 규칙 기반 폴백")
+                    enhanced = _rule_based_enhanced_summary(text, _title_str, industry_key)
+                    enhanced["headline"] = _generate_headline(_title_str)
+                    _cache[_ck] = {"summary": enhanced, "source": "rule", "cached_at": datetime.now().isoformat()}
+                    _save_summary_cache(_cache)
+                    return enhanced, "rule"
             llm_result["headline"] = _generate_headline(_title_str)
             print(f"[summarizer] [OK] Groq 4-frame 요약 성공")
         else:

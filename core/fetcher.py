@@ -913,6 +913,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
             "parse_status":   "fail",
             "fetch_info":     fetch_info,
             "fail_reason":    _classify_fetch_failure(fetch_info),
+            "url":            url,
             "source_url":     url,
         }
 
@@ -1000,6 +1001,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
             "parse_status":   "fail",
             "fetch_info":     fetch_info,
             "fail_reason":    "본문을 추출할 수 없습니다 (동적 렌더링 가능성)",
+            "url":            url,
             "source_url":     url,
         }
 
@@ -1020,6 +1022,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
                 f"본문이 너무 짧습니다 "
                 f"({len(body_text)}자 / 최소 {MIN_ARTICLE_CHARS}자 필요)"
             ),
+            "url":            url,
             "source_url":     url,
         }
 
@@ -1056,7 +1059,8 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
         "parse_status":     "success",
         "fetch_info":       fetch_info,
         "fail_reason":      "",
-        "source_url":       url,              # 원본 URL 보존
+        "url":              url,
+        "source_url":       url,              # 원본 URL 보존 (하위호환)
     }
 
     # Phase 13: 캐시 저장
