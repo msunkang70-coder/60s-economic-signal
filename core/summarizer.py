@@ -711,20 +711,19 @@ def summarize_3line(
     text: str,
     title: str = "",
     industry_key: str = "일반",
-) -> tuple[dict | str, str]:
+) -> tuple[dict, str]:
     """
     정책 브리핑용 요약 생성 (v5 공개 인터페이스).
 
     반환: (summary, source)
-      summary = dict {"impact","risk","opportunity","action"} (4-frame)
-              | str (기존 3줄 텍스트 폴백)
-      source  = "groq" | "rule" | "cache"
+      summary = dict {"impact","risk","opportunity","action","headline"} (4-frame)
+      source  = "groq" | "rule" | "cache" | "title_fallback"
 
     우선순위:
       0) 캐시 히트 시 캐시 반환 (TTL 7일)
       1) GROQ_API_KEY 있으면 Llama 3.3 70B → 4-frame JSON 시도
-      2) JSON 파싱 실패 시 기존 3줄 텍스트 (LLM)
-      3) 키 없거나 호출 실패 시 규칙 기반 폴백
+      2) 품질 검증 실패 시 재시도 → 규칙 기반 폴백
+      3) 키 없거나 호출 실패 시 규칙 기반 폴백 (4-frame dict)
     """
     # title이 dict로 전달된 경우 방어
     _title_str = title if isinstance(title, str) else str(title.get("title", "")) if isinstance(title, dict) else ""
@@ -799,10 +798,11 @@ def summarize_rule_based(
     title: str = "",
     max_sentences: int = 3,
     industry_key: str = "일반",
-) -> str:
+) -> dict:
     """
     텍스트에서 중요 문장을 점수화하여 추출 요약을 반환한다.
     외부 LLM 사용 없이 순수 규칙 기반으로 동작한다.
+    4-frame dict 반환으로 통일 (v5).
 
     점수 기준:
       - 경제 키워드 포함: +2.0 (키워드당)
@@ -816,7 +816,15 @@ def summarize_rule_based(
     ★ v4: 리스크/기회 키워드 가중치 + 산업별 핵심변수 부스트 추가.
     """
     if not text:
-        return title if isinstance(title, str) else "본문 없음"
+        _t = title if isinstance(title, str) else "본문 없음"
+        _label = _resolve_industry_label(industry_key)
+        return {
+            "impact": f"{_t} 관련 영향 분석 필요",
+            "risk": "상세 본문 확인 후 리스크 평가 필요",
+            "opportunity": f"{_label} 관점 기회 요인 검토 필요",
+            "action": "원문 기사 확인 후 대응 방안 수립",
+            "headline": _generate_headline(_t),
+        }
 
     # title이 dict로 전달된 경우 방어
     _title_str = title if isinstance(title, str) else str(title.get("title", "")) if isinstance(title, dict) else ""
@@ -886,18 +894,18 @@ def summarize_rule_based(
 
         scored.append((score, idx, sent))
 
-    # 점수 내림차순 → 원래 순서(idx) 오름차순으로 최종 정렬
+    # 점수 내림차순 → 상위 4문장 추출
     scored.sort(key=lambda x: (-x[0], x[1]))
-    top = sorted(scored[:max_sentences], key=lambda x: x[1])
-    extracted = [s for _, _, s in top]
+    top_sentences = [s for _, _, s in scored[:4]]
 
-    # ── 구조화 3줄 요약: max_sentences >= 3이면 항상 적용 ─
-    if max_sentences >= 3 and sentences:
-        return _structured_3line(sentences, extracted, _title_str)
-
-    # 2줄 이하 요청 시에만 단순 join
-    summary = " ".join(extracted)
-    return summary if summary else text.strip()
+    industry_label = _resolve_industry_label(industry_key)
+    return {
+        "impact": top_sentences[0] if len(top_sentences) > 0 else f"{_title_str} 관련 영향 분석 필요",
+        "risk": top_sentences[1] if len(top_sentences) > 1 else "상세 본문 확인 후 리스크 평가 필요",
+        "opportunity": top_sentences[2] if len(top_sentences) > 2 else f"{industry_label} 관점 기회 요인 검토 필요",
+        "action": top_sentences[3] if len(top_sentences) > 3 else "원문 기사 확인 후 대응 방안 수립",
+        "headline": _generate_headline(_title_str),
+    }
 
 
 # ──────────────────────────────────────────────────────

@@ -167,7 +167,8 @@ class TestSummarizer:
             )
         assert summary, "요약 결과가 비어있습니다"
         assert source == "rule", f"source가 'rule'이 아님: {source}"
-        assert len(summary) > 20, f"요약이 너무 짧음: {len(summary)}자"
+        assert isinstance(summary, dict), f"규칙 기반 폴백이 dict가 아님: {type(summary)}"
+        assert "impact" in summary, "4-frame impact 키 누락"
 
     @pytest.mark.parametrize("industry", INDUSTRIES)
     def test_summarize_per_industry(self, sample_text, sample_article, industry):
@@ -728,8 +729,8 @@ class TestHeroCard4Frame:
                 f"4-frame '{key}' 값이 비어있음"
             )
 
-    def test_hero_card_str_fallback(self, sample_text, sample_article):
-        """LLM 실패 시 str 폴백이 정상 동작하는지 검증."""
+    def test_hero_card_dict_fallback(self, sample_text, sample_article):
+        """LLM 실패 시 규칙 기반 4-frame dict 폴백이 정상 동작하는지 검증."""
         from core.summarizer import summarize_3line
         with patch("core.summarizer._summarize_with_llm", return_value=None), \
              patch("core.summarizer._verify_body_title_relevance", return_value=True):
@@ -737,8 +738,9 @@ class TestHeroCard4Frame:
                 sample_text, title=sample_article["title"], industry_key="반도체",
             )
         assert source == "rule"
-        assert isinstance(summary, str), f"폴백 결과가 str가 아님: {type(summary)}"
-        assert len(summary) > 10
+        assert isinstance(summary, dict), f"폴백 결과가 dict가 아님: {type(summary)}"
+        assert "impact" in summary, "4-frame impact 키 누락"
+        assert summary["impact"], "impact 값이 비어있음"
 
     def test_impact_detail_in_signal(self, macro_data):
         """generate_today_signal 반환값에 impact_detail이 있는지 검증."""
