@@ -1063,6 +1063,18 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
         "source_url":       url,              # 원본 URL 보존 (하위호환)
     }
 
+    # 본문-제목 최소 연관성 검증
+    if body_text and title:
+        import re as _re
+        title_words = set(_re.findall(r'[가-힣]{2,}', title))
+        title_words -= {"우리", "이번", "대한", "관련", "통해", "위해"}
+        body_sample = body_text[:1500]
+        match_count = sum(1 for w in title_words if w in body_sample)
+        if title_words and match_count < min(2, len(title_words)):
+            print(f"[fetcher] ⚠️ 본문-제목 불일치: '{title[:30]}' → body에 키워드 {match_count}개만 매칭")
+            _result["parse_status"] = "partial"
+            _result["fail_reason"] = "body_title_mismatch"
+
     # Phase 13: 캐시 저장
     try:
         from core.article_cache import get_cache
