@@ -25,8 +25,8 @@ def _parse_value(raw) -> float | None:
 def _check_velocity(label: str, current: float, previous: float) -> dict | None:
     """변화율 기반 충격 감지.
 
-    |delta_pct| >= 1% → shock
-      1-3%: minor, 3-5%: major, 5%+: extreme
+    |delta_pct| >= 2% → shock
+      2-5%: minor, 5-8%: major, 8%+: extreme
     """
     if previous == 0:
         return None
@@ -34,16 +34,16 @@ def _check_velocity(label: str, current: float, previous: float) -> dict | None:
     delta = current - previous
     delta_pct = abs(delta / previous * 100)
 
-    if delta_pct < 1.0:
+    if delta_pct < 2.0:
         return None
 
     # shock_type
     shock_type = "spike" if delta > 0 else "plunge"
 
     # severity
-    if delta_pct >= 5.0:
+    if delta_pct >= 8.0:
         severity = "extreme"
-    elif delta_pct >= 3.0:
+    elif delta_pct >= 5.0:
         severity = "major"
     else:
         severity = "minor"
@@ -140,6 +140,20 @@ def detect_shocks(macro_data: dict, prev_macro: dict | None = None) -> list[dict
         reversal_shock = _check_reversal(label, current, previous, trend)
         if reversal_shock:
             shocks.append(reversal_shock)
+
+    # severity 기준 내림차순 정렬 후 최대 3개로 슬라이싱
+    _SEV_ORDER = {"extreme": 3, "major": 2, "minor": 1}
+    shocks.sort(key=lambda s: _SEV_ORDER.get(s.get("severity", "minor"), 0), reverse=True)
+    shocks = shocks[:3]
+
+    # 동일 방향 shock가 3개 이상이면 첫 번째 항목의 alert_msg를 복합 패턴 메시지로 교체
+    spike_shocks = [s for s in shocks if s["shock_type"] == "spike"]
+    plunge_shocks = [s for s in shocks if s["shock_type"] == "plunge"]
+    for group in (spike_shocks, plunge_shocks):
+        if len(group) >= 3:
+            indicators = "·".join(s["indicator"] for s in group)
+            direction = "상승" if group[0]["shock_type"] == "spike" else "하락"
+            group[0]["alert_msg"] = f"⚠️ 복합 충격: {indicators} 동반 {direction} — 수입 원가 상승 압력 경고"
 
     # save detected shocks
     for shock in shocks:

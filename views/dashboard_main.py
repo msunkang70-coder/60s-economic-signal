@@ -247,9 +247,6 @@ def render_impact_strip(macro_data: dict) -> None:
 
 def render_industry_variable_card(industry_key: str, docs: list, macro_data: dict) -> None:
     """Tab 1 상단에 산업별 핵심 변수 카드 표시."""
-    if industry_key == "일반":
-        return
-
     from core.macro_utils import _get_threshold_status
 
     # ★ FIX: docs가 비어있으면 session_state에서 가져옴
@@ -265,16 +262,17 @@ def render_industry_variable_card(industry_key: str, docs: list, macro_data: dic
         "글로벌 소비 경기": ["소비", "내수", "가계", "소비자", "소비재", "소매", "유통", "식품"],
         "물류비(해운운임)": ["물류", "해운", "운임", "운송", "컨테이너", "해상", "배송"],
         "소비자물가": ["물가", "CPI", "인플레", "소비자물가"],
-        "미국 반도체 규제": ["반도체", "CHIPS", "수출통제", "수출 규제", "제재", "반도체 규제"],
-        "AI 반도체 수요": ["AI", "GPU", "HBM", "AI반도체", "인공지능", "엔비디아"],
-        "중국 수출 통제": ["중국", "수출통제", "희토류", "수출 제한", "대중"],
+        "미국 반도체 규제": ["반도체", "규제", "수출통제", "미국", "칩", "CHIPS", "첨단", "제재", "반도체규제", "수출규제"],
+        "AI반도체 수요": ["AI", "인공지능", "GPU", "HBM", "반도체수요", "데이터센터", "엔비디아", "생성형", "AI반도체"],
+        "AI 반도체 수요": ["AI", "인공지능", "GPU", "HBM", "반도체수요", "데이터센터", "엔비디아", "생성형", "AI반도체"],
+        "중국 수출 통제": ["중국", "수출통제", "희토류", "중국수출", "대중", "수출제한", "통제", "중국규제", "수출 제한"],
         "국제유가": ["유가", "원유", "나프타", "석유", "에너지"],
         "원자재 가격": ["원자재", "원자재 가격", "소재", "부품", "공급망"],
         "중국 경기": ["중국", "중국 경기", "중국 경제", "대중국"],
         "탄소국경조정(CBAM)": ["탄소", "CBAM", "탄소국경", "탄소중립", "배출"],
         "리튬 가격": ["리튬", "양극재", "배터리", "2차전지", "LFP", "NCM"],
         "전기차 판매": ["전기차", "EV", "전기차 판매", "전기차 보조금"],
-        "미국 IRA": ["IRA", "인플레이션감축법", "미국 보조금"],
+        "미국 IRA": ["IRA", "인플레이션감축법", "미국 보조금", "AMPC"],
         "선박 수주": ["선박", "조선", "수주", "LNG선", "선박 수주"],
         "해운 운임": ["해운", "운임", "BDI", "컨테이너", "해운 운임"],
         "철강 가격": ["철강", "열연", "냉연", "철광석", "철강 가격"],
@@ -282,7 +280,7 @@ def render_industry_variable_card(industry_key: str, docs: list, macro_data: dic
         "중국 철강 수출": ["중국 철강", "과잉 공급", "중국 수출"],
         "미국 관세 정책": ["관세", "통상", "무역 분쟁", "미국 관세"],
         "전기차 보조금": ["전기차", "보조금", "EV", "IRA"],
-        "환율(원/$)": ["환율", "원달러", "달러", "원화"],
+        "환율(원/$)": ["환율", "원달러", "달러", "원화", "외환", "FX", "원·달러", "환율변동"],
     }
 
     # ★ 확장 키워드도 동의어 매칭에 활용
@@ -309,7 +307,10 @@ def render_industry_variable_card(industry_key: str, docs: list, macro_data: dic
             all_match_kws = list(synonyms) + [kw for kw in _ext_kws if any(s in kw or kw in s for s in synonyms)]
             count = sum(
                 1 for d in docs
-                if any(syn in d.get("title", "") for syn in all_match_kws)
+                if any(
+                    syn in (d.get("title", "") + " " + d.get("body", "")[:500]).lower()
+                    for syn in [s.lower() for s in all_match_kws]
+                )
             )
             items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → 관련 기사 {count}건</div>'
 

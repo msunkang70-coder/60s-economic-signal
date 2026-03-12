@@ -30,6 +30,18 @@ def macro_spike():
 
 
 @pytest.fixture
+def macro_many_shocks():
+    """다수 충격 데이터 — 5개 이상 shock 발생 가능."""
+    return {
+        "환율(원/$)": {"value": "1500", "prev_value": "1400", "trend": "▲"},
+        "소비자물가(CPI)": {"value": "3.5", "prev_value": "3.0", "trend": "▲"},
+        "수출증가율": {"value": "20", "prev_value": "10", "trend": "▲"},
+        "기준금리": {"value": "4.0", "prev_value": "3.5", "trend": "▲"},
+        "수입물가지수": {"value": "10", "prev_value": "5", "trend": "▲"},
+    }
+
+
+@pytest.fixture
 def macro_stable():
     """안정 데이터 — 변화 없음."""
     return {
@@ -134,34 +146,53 @@ class TestDetectShocks:
         for shock in result:
             assert shock["magnitude"] > 0
 
+    def test_max_3_shocks(self, macro_many_shocks):
+        """detect_shocks는 최대 3개만 반환."""
+        from core.shock_detector import detect_shocks
+        result = detect_shocks(macro_many_shocks)
+        assert len(result) <= 3, f"3개 초과 반환: {len(result)}개"
+
+    def test_shocks_sorted_by_severity(self, macro_many_shocks):
+        """반환된 shock가 severity 내림차순으로 정렬."""
+        from core.shock_detector import detect_shocks
+        sev_order = {"extreme": 3, "major": 2, "minor": 1}
+        result = detect_shocks(macro_many_shocks)
+        if len(result) >= 2:
+            for i in range(len(result) - 1):
+                assert sev_order[result[i]["severity"]] >= sev_order[result[i + 1]["severity"]]
+
 
 class TestCheckVelocity:
     """_check_velocity 내부 함수 테스트."""
 
     def test_below_threshold_returns_none(self):
-        """1% 미만 변화 시 None."""
+        """2% 미만 변화 시 None."""
         from core.shock_detector import _check_velocity
-        result = _check_velocity("환율(원/$)", 1350, 1348)
+        # 1.48% 변화 → threshold(2%) 미만이므로 None
+        result = _check_velocity("환율(원/$)", 1370, 1350)
         assert result is None
 
     def test_minor_shock(self):
-        """1-3% 변화 시 minor."""
+        """2-5% 변화 시 minor."""
         from core.shock_detector import _check_velocity
-        result = _check_velocity("환율(원/$)", 1370, 1350)
+        # 약 3.7% 변화 → minor
+        result = _check_velocity("환율(원/$)", 1400, 1350)
         assert result is not None
         assert result["severity"] == "minor"
 
     def test_major_shock(self):
-        """3-5% 변화 시 major."""
+        """5-8% 변화 시 major."""
         from core.shock_detector import _check_velocity
-        result = _check_velocity("환율(원/$)", 1400, 1350)
+        # 약 5.9% 변화 → major
+        result = _check_velocity("환율(원/$)", 1430, 1350)
         assert result is not None
         assert result["severity"] == "major"
 
     def test_extreme_shock(self):
-        """5% 이상 변화 시 extreme."""
+        """8% 이상 변화 시 extreme."""
         from core.shock_detector import _check_velocity
-        result = _check_velocity("환율(원/$)", 1430, 1350)
+        # 약 8.1% 변화 → extreme
+        result = _check_velocity("환율(원/$)", 1460, 1350)
         assert result is not None
         assert result["severity"] == "extreme"
 

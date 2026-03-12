@@ -913,6 +913,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
             "parse_status":   "fail",
             "fetch_info":     fetch_info,
             "fail_reason":    _classify_fetch_failure(fetch_info),
+            "source_url":     url,
         }
 
     raw_html = fetch_info["html"]
@@ -999,6 +1000,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
             "parse_status":   "fail",
             "fetch_info":     fetch_info,
             "fail_reason":    "본문을 추출할 수 없습니다 (동적 렌더링 가능성)",
+            "source_url":     url,
         }
 
     if len(body_text) < MIN_ARTICLE_CHARS:
@@ -1018,6 +1020,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
                 f"본문이 너무 짧습니다 "
                 f"({len(body_text)}자 / 최소 {MIN_ARTICLE_CHARS}자 필요)"
             ),
+            "source_url":     url,
         }
 
     # ── 성공: 요약 생성 ────────────────────────────────
@@ -1042,7 +1045,7 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
         f"method={used_method}  summary_source={summary_source}  keywords={keywords[:3]}"
     )
 
-    return {
+    _result = {
         "body_text":        body_text,
         "summary_3lines":   summary,
         "summary_source":   summary_source,   # "gemini" | "rule"
@@ -1053,4 +1056,14 @@ def fetch_detail(doc_id: str, url: str, title: str = "", industry_key: str = "�
         "parse_status":     "success",
         "fetch_info":       fetch_info,
         "fail_reason":      "",
+        "source_url":       url,              # 원본 URL 보존
     }
+
+    # Phase 13: 캐시 저장
+    try:
+        from core.article_cache import get_cache
+        get_cache().set(doc_id, _result)
+    except Exception:
+        pass
+
+    return _result

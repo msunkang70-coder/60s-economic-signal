@@ -189,7 +189,7 @@ def render_main_content(industry_key: str, macro_data: dict, docs: list) -> None
     st.divider()
 
     # ── [2.5] 시나리오 분석 ──────────────────────────────
-    with st.expander("🔮 시나리오 분석  (Beta)", expanded=False):
+    with st.expander("🔮 시나리오 분석", expanded=False):
         try:
             from core.scenario_engine import SCENARIO_PRESETS, simulate_scenario
 
@@ -244,33 +244,42 @@ def render_main_content(industry_key: str, macro_data: dict, docs: list) -> None
                     st.bar_chart(_sc_chart_data)
             elif _sc_run and not macro_data:
                 st.warning("거시지표 데이터가 없습니다. ECOS 업데이트를 먼저 실행하세요.")
+
+            # ── 시나리오 전략 옵션 (decision_engine 연동) ──
+            try:
+                from core.decision_engine import generate_scenario_strategies, _SCENARIO_PRESETS
+
+                _scenario_names = list(_SCENARIO_PRESETS.keys())
+                _selected_scenario = st.selectbox("시나리오 전략 선택", _scenario_names, key="scenario_select")
+
+                _strategies = generate_scenario_strategies(macro_data, industry_key, _selected_scenario)
+                if _strategies:
+                    for i, opt in enumerate(_strategies[:3], 1):
+                        urgency_color = "#dc2626" if opt.get("urgency") == "즉시" else "#ea580c" if opt.get("urgency") == "이번 주" else "#16a34a"
+                        st.markdown(f"""
+                        <div style="padding:12px; margin:8px 0; background:#fff; border-radius:8px; border-left:4px solid {urgency_color};">
+                            <strong>{i}. {opt.get('title','')}</strong><br>
+                            <span style="color:#666; font-size:13px;">{opt.get('rationale','')}</span><br>
+                            <span style="background:{urgency_color}; color:#fff; padding:2px 8px; border-radius:4px; font-size:11px;">{opt.get('urgency','')}</span>
+                            <span style="background:#e8f5e9; color:#375623; padding:2px 8px; border-radius:4px; font-size:11px; margin-left:4px;">난이도: {opt.get('difficulty','')}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.caption("해당 시나리오에 대한 전략을 생성할 수 없습니다.")
+            except Exception:
+                st.caption("시나리오 분석 모듈 로딩 중...")
+
         except Exception as _sc_err:
             st.error(f"시나리오 분석 오류: {_sc_err}")
 
     # ── [2.6] 글로벌 시장 추천 ───────────────────────────
-    with st.expander("🌏 글로벌 시장 추천  (Beta)", expanded=False):
-        try:
-            from core.market_recommender import recommend_markets as _recommend_markets
-
-            if st.button("🚀 추천 받기", use_container_width=True, key="btn_market_recommend"):
-                with st.spinner("유망 시장 분석 중..."):
-                    _mr_results = _recommend_markets(industry_key, macro_data)
-
-                if _mr_results:
-                    _mr_cols = st.columns(len(_mr_results))
-                    for _mr_col, _mr in zip(_mr_cols, _mr_results):
-                        with _mr_col:
-                            _mr_fta_badge = "✅ FTA" if _mr["fta"] else "—"
-                            st.markdown(f"### {_mr['country']}")
-                            st.progress(min(_mr["score"], 100), text=f"종합 점수: {_mr['score']}점")
-                            st.metric(label="수출 성장률", value=_mr["growth_rate"])
-                            st.caption(f"교역 규모: {_mr['trade_value']}")
-                            st.caption(f"FTA: {_mr_fta_badge}")
-                            st.info(_mr["reason"])
-                else:
-                    st.warning("추천 가능한 시장 데이터가 없습니다.")
-        except Exception as _mr_err:
-            st.error(f"시장 추천 오류: {_mr_err}")
+    with st.expander("🌏 글로벌 시장 추천", expanded=False):
+        st.markdown("""
+<div style="padding:20px; text-align:center; background:#f8fafc; border-radius:8px; border:1px dashed #cbd5e1;">
+    <p style="font-size:16px; color:#64748b; margin:0;">🌍 Coming Soon</p>
+    <p style="font-size:13px; color:#94a3b8; margin:8px 0 0;">관세청 데이터 연동 후 활성화됩니다</p>
+</div>
+        """, unsafe_allow_html=True)
 
     st.divider()
 
@@ -565,8 +574,13 @@ def _render_article_list(industry_key: str, macro_data: dict) -> None:
                         _art_detail = None
 
                 if _art_detail:
-                    # 4-frame 요약
+                    # headline 표시 (4-frame dict인 경우)
                     _sum_data = _art_detail.get("summary_3lines")
+                    _headline = _sum_data.get("headline", "") if isinstance(_sum_data, dict) else ""
+                    if _headline:
+                        st.markdown(f"**\U0001f4cc {_headline}**")
+
+                    # 4-frame 요약
                     if isinstance(_sum_data, dict) and "impact" in _sum_data:
                         _frame_items = [
                             ("📊 Impact", _sum_data.get("impact", ""), "#3B82F6"),
@@ -611,8 +625,14 @@ def _render_article_list(industry_key: str, macro_data: dict) -> None:
                         pass
 
                     # 원문 링크
-                    if _art.get("url"):
-                        st.markdown(f"🔗 [원문 보기]({_art['url']})")
+                    _source_url = (
+                        _art_detail.get("source_url")
+                        or _art.get("source_url")
+                        or _art.get("url")
+                        or _art.get("link", "")
+                    )
+                    if _source_url:
+                        st.markdown(f"\U0001f517 [원문 보기]({_source_url})")
 
                     # 선택 문서로 저장 (리포트 다운로드용)
                     st.session_state.last_doc = _art

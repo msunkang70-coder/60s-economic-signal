@@ -615,6 +615,17 @@ def _cache_key(text: str, industry_key: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
+def _generate_headline(title: str, text: str = "") -> str:
+    """기사 제목에서 20자 이내 핵심 요약 생성."""
+    if not title:
+        return ""
+    # 제목이 20자 이하면 그대로
+    if len(title) <= 20:
+        return title
+    # 20자 넘으면 앞 18자 + "…"
+    return title[:18] + "…"
+
+
 def summarize_3line(
     text: str,
     title: str = "",
@@ -654,6 +665,7 @@ def summarize_3line(
     llm_result = _summarize_with_llm(text, _title_str, industry_key=industry_key)
     if llm_result:
         if isinstance(llm_result, dict):
+            llm_result["headline"] = _generate_headline(_title_str)
             print(f"[summarizer] [OK] Groq 4-frame 요약 성공")
         else:
             print(f"[summarizer] [OK] Groq 요약 성공 ({len(llm_result)}자)")

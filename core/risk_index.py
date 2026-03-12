@@ -99,23 +99,41 @@ def calculate_risk_index(macro_data: dict, industry_key: str = "일반") -> dict
         risk = _indicator_risk_score(label, value, prev_value)
         w = weights.get(label, 1.0)
 
+        weighted_score = risk * (w ** 1.5)
         breakdown[label] = {
             "value": value,
             "prev_value": prev_value,
             "risk_score": risk,
             "weight": w,
-            "weighted_score": risk * w,
+            "weighted_score": weighted_score,
         }
 
-        weighted_sum += risk * w
+        weighted_sum += weighted_score
         total_weight += w
+
+    # 산업별 critical_variables 위험 보너스
+    critical_vars = profile.get("critical_variables", [])
+    critical_bonus = 0
+    for cv in critical_vars:
+        for label, info in breakdown.items():
+            if cv in label and info["risk_score"] >= 16:
+                critical_bonus += 5
+
+    # 산업별 고가중치(>1.0) 지표가 위험 구간이면 추가 보너스
+    for label, info in breakdown.items():
+        w = info["weight"]
+        if w > 1.0 and info["risk_score"] >= 16:
+            critical_bonus += round((w - 1.0) * 8)
 
     # 0-100 정규화: max possible per indicator = 33 (25+8), 가중합 / (max_per * total_weight) * 100
     if total_weight > 0:
         max_possible = 33.0 * total_weight
-        score = round(min(100.0, (weighted_sum / max_possible) * 100), 1)
+        score = round(min(100.0, (weighted_sum / max_possible) * 100 + critical_bonus), 1)
     else:
         score = 0.0
+
+    # 0-100 클램핑
+    score = max(0.0, min(100.0, score))
 
     # level 결정
     if score >= 75:
