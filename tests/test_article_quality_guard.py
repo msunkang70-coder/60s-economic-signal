@@ -12,16 +12,18 @@ class TestSummaryQualityGuard:
     """요약 품질 최소 기준 보호"""
 
     def test_system_prompt_no_30char_limit(self):
-        """SYSTEM_PROMPT에 '30자 이내' 제한이 없어야 함 (근본 원인)"""
+        """SYSTEM_PROMPT에 '30자 이내' 분석 길이 제한이 없어야 함 (근본 원인)"""
         from core.summarizer import SYSTEM_PROMPT
-        assert "30자" not in SYSTEM_PROMPT, \
-            "SYSTEM_PROMPT에 '30자' 제한이 남아있음! 50~80자로 변경 필요"
+        assert "30자 이내" not in SYSTEM_PROMPT, \
+            "SYSTEM_PROMPT에 '30자 이내' 제한이 남아있음!"
+        assert "1문장(30자" not in SYSTEM_PROMPT, \
+            "SYSTEM_PROMPT에 '1문장(30자' 제한이 남아있음!"
 
     def test_system_prompt_has_minimum_length(self):
         """SYSTEM_PROMPT에 최소 길이 요구사항이 있어야 함"""
         from core.summarizer import SYSTEM_PROMPT
-        assert "50" in SYSTEM_PROMPT or "80" in SYSTEM_PROMPT, \
-            "SYSTEM_PROMPT에 최소 50자 이상 요구사항이 없음"
+        assert "100" in SYSTEM_PROMPT or "200" in SYSTEM_PROMPT or "80" in SYSTEM_PROMPT, \
+            "SYSTEM_PROMPT에 최소 길이 요구사항(100~200자)이 없음"
 
     def test_validate_summary_quality_exists(self):
         """_validate_summary_quality 함수가 존재해야 함"""
@@ -44,10 +46,10 @@ class TestSummaryQualityGuard:
         """양호한 요약은 품질 검증 통과해야 함"""
         from core.summarizer import _validate_summary_quality
         good_summary = {
-            "impact": "환율 1,480원 돌파로 반도체 수출 마진 약 3%p 개선 전망, 2분기 내 효과 본격화",
-            "risk": "원자재 수입 원가 동반 상승 시 마진 개선분 15% 상쇄 가능, 하반기 역마진 우려",
-            "opportunity": "달러 매출 비중 60% 이상 기업은 2분기 내 환헷지 비율 30%→50% 조정 적기",
-            "action": "주요 원자재 3개 공급사 결제 통화별 원가 변동률 즉시 점검, 이번 주 내 완료",
+            "impact": "환율 1,480원 돌파로 반도체 수출 마진 약 3%p 개선 전망이다. 2분기 내 효과가 본격화되면서 달러 기반 매출 비중이 높은 수출기업의 수익성이 크게 개선될 것으로 예상된다.",
+            "risk": "원자재 수입 원가가 동반 상승할 경우 마진 개선분의 15%가 상쇄될 가능성이 있다. 하반기에는 역마진 우려가 확대되면서 원가 관리 전략의 재검토가 필요한 시점이다.",
+            "opportunity": "달러 매출 비중 60% 이상 기업은 2분기 내 환헷지 비율을 30%에서 50%로 조정하기에 적기이다. 환율 우호 국면을 활용한 선제적 수출 계약 확대도 검토할 만하다.",
+            "action": "• 주요 원자재 3개 공급사 결제 통화별 원가 변동률 점검\n• 환헷지 비율 조정 검토\n• 이번 주 내 완료",
         }
         assert _validate_summary_quality(good_summary) == True
 

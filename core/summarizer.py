@@ -38,37 +38,64 @@ from core.utils import single_line
 # 시스템 프롬프트 (산업 특화 LLM 브리핑용)
 # ──────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
-당신은 한국 {industry_label} 수출기업 전략 브리핑 전문가입니다.
+당신은 한국 {industry_label} 수출기업 CEO를 위한 경제 전략 브리핑 전문가입니다.
 {industry_variables}
-아래 경제 기사를 읽고 다음 4가지 관점에서 각 1~2문장(50~80자)으로 분석하세요.
 
-📊 Impact(영향): 이 변화가 {industry_label} 수출기업에 미치는 직접적 영향
-📉 Risk(리스크): 주의해야 할 위험 요소
-💡 Opportunity(기회): 활용 가능한 기회
-✅ Action(즉시 행동): 지금 당장 확인해야 할 것 1가지
+아래 경제 기사를 분석하여, {industry_label} 수출기업 CEO가 즉시 의사결정에 활용할 수 있는 전략 브리핑을 작성하세요.
 
-[절대 규칙]
-- 원문 문장을 그대로 인용하지 마세요. 반드시 {industry_label} 관점에서 재해석하여 분석적으로 작성하세요
-- 4개 필드는 모두 서로 다른 내용이어야 합니다. 같은 문장이나 유사한 표현을 반복하지 마세요
-- 각 항목은 반드시 다음을 포함: ①구체적 수치/비율 1개 이상 ②해당 산업에 미치는 영향의 방향(증가/감소/유지) ③시간 범위(즉시/단기/중기)
-- 추상적 표현("영향이 크다", "주의 필요") 대신 구체적 맥락을 기술하세요
-- 줄임표(…) 사용 금지
-- 기사 본문의 문장을 복사-붙여넣기하지 말고, 해당 내용이 {industry_label} 기업 CEO에게 어떤 의미인지 번역하세요
+## 출력 형식 (반드시 JSON)
 
-[예시 — 좋은 분석]
-{{"impact": "환율 1,480원 돌파로 반도체 수출 마진 약 3%p 개선 전망, 2분기 내 효과",
-  "risk": "원자재 수입 원가 동반 7% 상승 시 마진 개선분 50% 상쇄 가능, 3분기부터 역마진",
-  "opportunity": "달러 매출 비중 60% 이상 기업은 환헷지 비율 30%→50% 조정 적기",
-  "action": "주요 원자재 3개 공급사 결제 통화별 원가 변동률 이번 주 내 점검"}}
-
-[예시 — 나쁜 분석 (이렇게 쓰지 마세요)]
-{{"impact": "영향이 있을 것으로 보입니다",
-  "risk": "리스크가 존재합니다",
-  "opportunity": "기회가 될 수 있습니다",
-  "action": "확인이 필요합니다"}}
-
-출력 형식 (반드시 아래 JSON으로):
 {{"impact": "...", "risk": "...", "opportunity": "...", "action": "..."}}
+
+## 각 필드 작성 규칙
+
+📊 Impact (영향) — 2~3문장, 100~200자
+- 이 기사의 핵심 변화가 {industry_label} 수출기업에 미치는 **직접적 영향**을 서술
+- 반드시 포함: ①변화의 방향(확대/축소/강화/완화) ②영향 받는 구체적 영역(마진/수주/원가/시장접근 등) ③시간적 범위
+- 핵심 표현은 **볼드 마크다운**으로 표시
+
+📉 Risk (리스크) — 2~3문장, 100~200자
+- {industry_label} 산업 특성에 기반한 **구체적 위험 시나리오** 서술
+- 단순 "리스크가 있다"가 아니라 "A하면 B가 발생하여 C에 영향" 형식의 인과관계 서술
+- Impact와 완전히 다른 내용이어야 함
+
+💡 Opportunity (기회) — 2~3문장, 100~200자
+- {industry_label} 기업이 이 변화를 통해 얻을 수 있는 **구체적 기회** 서술
+- "기회가 될 수 있다"가 아니라 구체적 행동과 그 결과를 연결
+- Risk와 완전히 다른 시각이어야 함
+
+✅ Action (즉시 행동) — bullet point 3개, 각 15~30자
+- "• " 로 시작하는 3개의 **구체적 실행 항목** 나열 (줄바꿈으로 구분)
+- 각 항목은 "동사 + 대상 + 범위" 형식 (예: "이사회 독립성 및 지배구조 정책 점검")
+- 추상적 표현("확인 필요", "모니터링") 대신 구체적 점검 대상을 명시
+
+## 절대 금지 사항
+- 원문 문장을 그대로 인용하지 마세요. 모든 문장은 {industry_label} 관점에서 재해석·재구성해야 합니다
+- 4개 필드의 내용이 서로 중복되면 안 됩니다
+- "영향이 있다", "주의가 필요하다" 같은 의미 없는 문장 금지
+- 줄임표(…) 사용 금지
+- 기사 본문에 없는 수치를 임의로 만들지 마세요
+
+## 산업별 분석 관점 가이드
+{industry_label} 기업 CEO가 이 기사를 읽고 가장 먼저 궁금해할 것:
+- 이것이 우리 {industry_label} 수출에 어떤 의미인가?
+- 경쟁사 대비 우리가 취해야 할 차별화된 행동은?
+- 단기(1~3개월) vs 중기(6개월~1년) 영향은 어떻게 다른가?
+
+## 좋은 예시 (소비재·식품 관점)
+기사 제목: "투자자 보호 강화가 곧 기업 거버넌스 개선"
+
+{{"impact": "투자자 보호 강화와 지배구조 개선 정책은 **브랜드 투자와 ESG 평가**와 기업 평판에 직접적인 영향을 줄 수 있으며, 소비재 기업의 **글로벌 브랜드 신뢰도와 투자 매력도**를 높일 가능성이 있다. 특히 해외 유통사와 투자자의 ESG 요구 대응이 중요해질 수 있다.",
+"risk": "소비재 기업은 브랜드 투자와 마케팅 투자가 중요한 산업 특성상 **주주 수익률 요구가 높아질 경우 장기 브랜드 투자 전략과 충돌**할 가능성이 있다. ESG 이슈 발생 시 **브랜드 평판 리스크**도 확대될 수 있다.",
+"opportunity": "ESG 및 지배구조 개선은 소비재 기업의 **글로벌 브랜드 가치 상승**과 **해외 유통 파트너 확대**로 이어질 수 있다. 투자자 친화 정책을 강화할 경우 **브랜드 기업 가치 프리미엄**이 형성될 가능성이 있다.",
+"action": "• ESG 및 지배구조 공시 강화\\n• 브랜드 투자 전략과 주주환원 정책 균형 점검\\n• 글로벌 유통 파트너 기준 대응"}}
+
+## 나쁜 예시 (절대 이렇게 쓰지 마세요)
+{{"impact": "예컨대 어떤 기업이 투자 금액 1천억 원으로 연간 100억 원을 벌었다고 하자",
+"risk": "주식에 투자하는 사람들은 위험 부담에 대한 보상으로 은행 이자보다는 높은 수익률을 요구하기 때문이다",
+"opportunity": "물론 틀린 말은 아니나 이런 관점에서는 거버넌스 개선의 목표가 잘 드러나지 않는다",
+"action": "이해충돌을 야기하는지 점검해야"}}
+→ 원문 복붙, 산업 관점 없음, Action이 1줄 모호 문장
 """
 
 
@@ -412,13 +439,17 @@ def _structured_3line(
 
 _LLM_PROMPT = """
 [기사 제목]: {title}
-[기사 본문]:
+
+[기사 본문 (요약 대상)]:
 {body}
 
 {industry_context}
 
-⚠️ 반드시 위 "기사 제목"의 주제에 대해서만 분석하세요.
-본문에 여러 주제가 섞여 있더라도, 제목이 다루는 핵심 주제에 집중하세요.
+⚠️ 중요 지시사항:
+1. 반드시 위 "기사 제목"의 주제에 대해서만 분석하세요
+2. 본문 문장을 그대로 옮기지 말고, 산업 관점에서 재해석하여 작성하세요
+3. 4개 필드(impact/risk/opportunity/action)는 모두 서로 다른 관점이어야 합니다
+4. Action은 반드시 "• " 로 시작하는 3개 bullet point로 작성하세요
 """
 
 
@@ -455,7 +486,13 @@ def _validate_output(raw: str) -> str | None:
 def _build_industry_context(industry_key: str) -> str:
     """산업 키에 따른 LLM 프롬프트 컨텍스트 블록 생성."""
     if not industry_key or industry_key == "일반":
-        return ""
+        return (
+            "[산업 맞춤 분석 관점]\n"
+            "- 분석 관점: 일반 수출기업 CEO를 위한 브리핑입니다\n"
+            "- 중요 경제 변수: 환율, 수출증가율, 물가, 금리\n"
+            "- 해석 키워드: 수출 경쟁력, 원가 구조, 시장 접근성, 글로벌 공급망\n"
+            "- Impact/Risk/Opportunity 모두 수출기업 경영진 관점에서 작성하세요\n"
+        )
     try:
         from core.industry_config import get_profile
         profile = get_profile(industry_key)
@@ -463,12 +500,33 @@ def _build_industry_context(industry_key: str) -> str:
         return ""
     label = profile.get("label", industry_key)
     crit_vars = ", ".join(profile.get("critical_variables", []))
-    return (
+    keywords = ", ".join(profile.get("keywords", [])[:8])
+    templates = profile.get("strategy_templates", [])
+    template_text = "\n".join(f"  - {t}" for t in templates[:3]) if templates else ""
+
+    context = (
         f"\n[산업 맞춤 분석 관점]\n"
-        f"- 분석 관점: {label} 수출기업 CEO를 위한 브리핑입니다\n"
-        f"- 중요 경제 변수: {crit_vars}\n"
-        f"- ③ 영향·시사점은 반드시 {label} 관점에서 작성하세요\n"
+        f"- 분석 대상: {label} 수출기업 CEO를 위한 브리핑입니다\n"
+        f"- 핵심 경제 변수: {crit_vars}\n"
+        f"- 산업 키워드: {keywords}\n"
+        f"- Impact/Risk/Opportunity 모두 반드시 {label} 관점에서 작성하세요\n"
+        f"- 이 산업의 CEO가 가장 궁금해할 포인트:\n"
+        f"{template_text}\n"
     )
+
+    # analysis_keywords 활용
+    analysis_kw = profile.get("analysis_keywords", {})
+    if analysis_kw:
+        impact_kw = ", ".join(analysis_kw.get("impact_focus", []))
+        risk_kw = ", ".join(analysis_kw.get("risk_focus", []))
+        opp_kw = ", ".join(analysis_kw.get("opportunity_focus", []))
+        context += (
+            f"- Impact 분석 시 집중할 키워드: {impact_kw}\n"
+            f"- Risk 분석 시 집중할 키워드: {risk_kw}\n"
+            f"- Opportunity 분석 시 집중할 키워드: {opp_kw}\n"
+        )
+
+    return context
 
 
 def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반") -> dict | str | None:
@@ -516,7 +574,7 @@ def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반"
                     {"role": "user", "content": prompt},
                 ],
                 "max_tokens":  4096,
-                "temperature": 0.3,
+                "temperature": 0.45,
             },
             timeout=15,
         )
@@ -603,10 +661,13 @@ def _save_summary_cache(cache: dict) -> None:
         pass
 
 
+_PROMPT_VERSION = "v6"  # 프롬프트 변경 시 반드시 증가
+
+
 def _cache_key(text: str, industry_key: str) -> str:
-    """텍스트 + 산업 키 기반 캐시 키 생성."""
+    """텍스트 + 산업 키 + 프롬프트 버전 기반 캐시 키 생성."""
     import hashlib
-    content = f"{industry_key}|{text[:500]}"
+    content = f"{_PROMPT_VERSION}|{industry_key}|{text[:500]}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
@@ -622,27 +683,32 @@ def _generate_headline(title: str, text: str = "") -> str:
 
 
 def _validate_summary_quality(summary_dict: dict) -> bool:
-    """요약 품질 최소 기준 검증. 통과 못하면 재시도 또는 폴백."""
+    """요약 품질 최소 기준 검증."""
     import re as _re
     fields = ["impact", "risk", "opportunity", "action"]
     texts = []
     for key in fields:
         text = summary_dict.get(key, "")
-        # 최소 길이 30자
-        if len(text) < 30:
-            return False
-        # 숫자가 1개 이상 포함되어야 함
-        if not _re.search(r'\d', text):
+        # 최소 길이: impact/risk/opportunity는 80자, action은 30자
+        min_len = 30 if key == "action" else 80
+        if len(text) < min_len:
             return False
         texts.append(text)
 
-    # 필드 간 중복 검사 (동일 텍스트 또는 앞 20자 동일이면 실패)
+    # 필드 간 중복 검사: 앞 30자가 동일하면 실패
     for i in range(len(texts)):
         for j in range(i + 1, len(texts)):
             if texts[i] == texts[j]:
                 return False
-            if len(texts[i]) >= 20 and texts[i][:20] == texts[j][:20]:
+            overlap = min(30, len(texts[i]), len(texts[j]))
+            if overlap > 0 and texts[i][:overlap] == texts[j][:overlap]:
                 return False
+
+    # action에 bullet point가 있는지 확인 (권장, 필수는 아님)
+    action_text = summary_dict.get("action", "")
+    if "•" not in action_text and "\n" not in action_text:
+        print("[summarizer] ⚠️ Action에 bullet point 없음 — 품질 권장 사항 미충족")
+
     return True
 
 
@@ -694,16 +760,13 @@ def _verify_body_title_relevance(body_text: str, title: str) -> bool:
     if not title or not body_text:
         return False
     import re as _re
-    # 제목에서 핵심 명사 추출 (2글자 이상 한글 단어)
     title_words = set(_re.findall(r'[가-힣]{2,}', title))
-    # 불용어 제거
-    stopwords = {"우리", "이번", "대한", "관련", "통해", "위해", "대비", "이상", "이하", "현재"}
+    stopwords = {"우리", "이번", "대한", "관련", "통해", "위해", "대비", "이상", "이하", "현재", "가능", "경우"}
     title_words -= stopwords
-    if not title_words:
+    if len(title_words) < 2:
         return True  # 검증 불가 시 통과
-    # 본문에 제목 키워드 최소 2개 이상 포함 필요
-    body_lower = body_text[:2000]
-    match_count = sum(1 for w in title_words if w in body_lower)
+    body_sample = body_text[:2000]
+    match_count = sum(1 for w in title_words if w in body_sample)
     return match_count >= min(2, len(title_words))
 
 
@@ -743,14 +806,18 @@ def summarize_3line(
 
     # ── 본문-제목 정합성 검증 ──
     if not _verify_body_title_relevance(text, _title_str):
-        print(f"[summarizer] ⚠️ 본문-제목 불일치 감지: '{_title_str[:30]}...'")
-        return {
-            "impact": f"'{_title_str[:40]}' 관련 정책 변화가 {_resolve_industry_label(industry_key)} 수출에 영향 예상",
-            "risk": "상세 본문 확인 필요 — 원문 링크에서 전문을 검토하세요",
-            "opportunity": "정책 방향에 따른 선제적 대응 기회 모색 필요",
-            "action": "원문 기사를 직접 확인하고 산업 영향도를 자체 평가하세요",
+        print(f"[summarizer] ⚠️ 본문-제목 불일치: '{_title_str[:40]}...'")
+        _label = _resolve_industry_label(industry_key)
+        _fallback = {
+            "impact": f"'{_title_str[:50]}' — 이 정책/변화가 {_label} 수출기업의 사업 환경에 영향을 미칠 수 있습니다. 원문을 통해 상세 내용을 확인하세요.",
+            "risk": f"{_label} 기업은 이 변화에 따른 규제·비용·시장 변동 리스크를 점검해야 합니다.",
+            "opportunity": f"정책 방향에 선제 대응하는 {_label} 기업에게 경쟁 우위 확보 기회가 있을 수 있습니다.",
+            "action": "• 원문 기사 전문 확인\n• 자사 영향도 사전 평가\n• 관련 부서 공유 및 대응 논의",
             "headline": _generate_headline(_title_str),
-        }, "title_fallback"
+        }
+        _cache[_ck] = {"summary": _fallback, "source": "title_guard", "cached_at": datetime.now().isoformat()}
+        _save_summary_cache(_cache)
+        return _fallback, "title_guard"
 
     # ── LLM 시도 ──
     llm_result = _summarize_with_llm(text, _title_str, industry_key=industry_key)
@@ -784,10 +851,14 @@ def summarize_3line(
         _save_summary_cache(_cache)
         return llm_result, "groq"
 
-    # ── 규칙 기반 폴백 ──
-    print(f"[summarizer] 규칙 기반 폴백 (Groq 키: {'있음' if _get_llm_key() else '없음'})")
-    result = summarize_rule_based(text, _title_str, max_sentences=3, industry_key=industry_key)
-    return result, "rule"
+    # ── 규칙 기반 폴백 → 4-frame dict ──
+    print(f"[summarizer] 규칙 기반 폴백 → 4-frame dict (Groq 키: {'있음' if _get_llm_key() else '없음'})")
+    enhanced = _rule_based_enhanced_summary(text, _title_str, industry_key)
+    enhanced["headline"] = _generate_headline(_title_str)
+    # 캐시 저장
+    _cache[_ck] = {"summary": enhanced, "source": "rule", "cached_at": datetime.now().isoformat()}
+    _save_summary_cache(_cache)
+    return enhanced, "rule"
 
 
 # ──────────────────────────────────────────────────────

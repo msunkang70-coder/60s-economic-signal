@@ -591,12 +591,34 @@ def _render_article_list(industry_key: str, macro_data: dict) -> None:
                         _frame_html = ""
                         for _fl, _ft, _fc in _frame_items:
                             if _ft:
-                                _frame_html += (
-                                    f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
-                                    f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
-                                    f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
-                                    f'<div style="font-size:13px;color:#334155;margin-top:2px">{_ft}</div></div>'
-                                )
+                                # Action 필드: bullet point가 있으면 리스트 렌더링
+                                if _fl == "✅ Action" and "•" in _ft:
+                                    _bullets = [b.strip() for b in _ft.split("•") if b.strip()]
+                                    _bullet_html = "".join(
+                                        f'<div style="font-size:13px;color:#334155;margin-top:3px;padding-left:8px">'
+                                        f'• {b}</div>'
+                                        for b in _bullets
+                                    )
+                                    _frame_html += (
+                                        f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
+                                        f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
+                                        f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
+                                        f'{_bullet_html}</div>'
+                                    )
+                                else:
+                                    # 기존 렌더링: bold 마크다운(**text**) → <strong> 변환
+                                    import re as _re_render
+                                    _ft_html = _re_render.sub(
+                                        r'\*\*(.+?)\*\*',
+                                        r'<strong style="color:#1E293B">\1</strong>',
+                                        _ft
+                                    )
+                                    _frame_html += (
+                                        f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
+                                        f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
+                                        f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
+                                        f'<div style="font-size:13px;color:#334155;margin-top:2px;line-height:1.6">{_ft_html}</div></div>'
+                                    )
                         if _frame_html:
                             st.html(f'<div style="font-family:Inter,sans-serif">{_frame_html}</div>')
                     else:

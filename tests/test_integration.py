@@ -159,7 +159,8 @@ class TestSummarizer:
         from core.summarizer import summarize_3line
         # LLM 호출을 mock으로 차단 → rule-based fallback
         with patch("core.summarizer._summarize_with_llm", return_value=None), \
-             patch("core.summarizer._verify_body_title_relevance", return_value=True):
+             patch("core.summarizer._verify_body_title_relevance", return_value=True), \
+             patch("core.summarizer._load_summary_cache", return_value={}):
             summary, source = summarize_3line(
                 sample_text,
                 title=sample_article["title"],
@@ -175,7 +176,8 @@ class TestSummarizer:
         """산업별 요약 생성이 에러 없이 완료되는지 검증."""
         from core.summarizer import summarize_3line
         with patch("core.summarizer._summarize_with_llm", return_value=None), \
-             patch("core.summarizer._verify_body_title_relevance", return_value=True):
+             patch("core.summarizer._verify_body_title_relevance", return_value=True), \
+             patch("core.summarizer._load_summary_cache", return_value={}):
             summary, source = summarize_3line(
                 sample_text,
                 title=sample_article["title"],
@@ -705,10 +707,10 @@ class TestHeroCard4Frame:
         from core.summarizer import summarize_3line
 
         mock_4frame = {
-            "impact": "환율 1,450원 돌파로 반도체 수출 채산성이 약 3%p 개선될 전망, 2분기 내 효과 본격화",
-            "risk": "원자재 수입 비용 동반 상승 시 마진 개선분 15% 상쇄 가능, 하반기 역마진 우려 존재",
-            "opportunity": "달러 매출 비중 60% 이상 기업은 환전 적기 활용하여 환헷지 비율 30%→50% 조정 가능",
-            "action": "주요 원자재 3개 공급사 결제 통화별 원가 변동률 즉시 점검, 환헤지 비중 확대 검토 필요",
+            "impact": "환율 1,450원 돌파로 **반도체 수출 채산성**이 약 3%p 개선될 전망이다. 2분기 내 효과가 본격화되면서 달러 기반 수출 매출의 원화 환산 이익이 크게 증가할 것으로 예상된다.",
+            "risk": "원자재 수입 비용이 동반 상승할 경우 마진 개선분의 15%가 상쇄될 가능성이 있다. 하반기에는 **역마진 우려**가 확대되면서 원가 관리 전략의 전면 재검토가 필요한 시점이다.",
+            "opportunity": "달러 매출 비중 60% 이상 기업은 환전 적기를 활용하여 **환헷지 비율을 30%에서 50%로** 조정하기에 적합한 시점이다. 선제적 계약 확대로 경쟁 우위를 확보할 수 있다.",
+            "action": "• 주요 원자재 3개 공급사 결제 통화별 원가 변동률 점검\n• 환헤지 비중 확대 검토\n• 2분기 수출 계약 조건 재협상",
         }
         mock_json_response = json.dumps(mock_4frame, ensure_ascii=False)
 
@@ -733,7 +735,8 @@ class TestHeroCard4Frame:
         """LLM 실패 시 규칙 기반 4-frame dict 폴백이 정상 동작하는지 검증."""
         from core.summarizer import summarize_3line
         with patch("core.summarizer._summarize_with_llm", return_value=None), \
-             patch("core.summarizer._verify_body_title_relevance", return_value=True):
+             patch("core.summarizer._verify_body_title_relevance", return_value=True), \
+             patch("core.summarizer._load_summary_cache", return_value={}):
             summary, source = summarize_3line(
                 sample_text, title=sample_article["title"], industry_key="반도체",
             )
