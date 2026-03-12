@@ -41,15 +41,25 @@ _MACRO_THRESHOLDS = {
 
 
 def _keyword_score(text: str, industry_key: str) -> float:
-    """A. 산업 keywords × 3 + critical_variables × 5 (상한 30)."""
+    """A. 산업 keywords × 3 + extended × 1.5 + critical_variables × 5 (상한 30)."""
     profile = get_profile(industry_key)
     keywords = profile.get("keywords", [])
     crit_vars = profile.get("critical_variables", [])
+
+    # 확장 키워드 (간접 관련 경제 용어)
+    try:
+        from ui.article_cards import _INDUSTRY_EXTENDED_KW
+        ext_kws = _INDUSTRY_EXTENDED_KW.get(industry_key, [])
+    except ImportError:
+        ext_kws = []
 
     score = 0.0
     for kw in keywords:
         if kw in text:
             score += 3.0
+    for kw in ext_kws:
+        if kw in text:
+            score += 1.5
     for cv in crit_vars:
         if cv in text:
             score += 5.0
@@ -533,3 +543,163 @@ def update_and_get_score_delta(
         "days_ago":    days_ago,
         "history":     spark,
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Article Intelligence v2 — score_article_v2 / batch_score_and_rank
+# ════════════════════════════════════════════════════════════════════════════
+
+def _detect_policy_type(text: str) -> str | None:
+    """기사 텍스트에서 정책 유형을 감지. 해당 없으면 None."""
+    best_type = None
+    best_score = 0.0
+    for ptype, (kws, pts) in _POLICY_KW.items():
+        if any(kw in text for kw in kws):
+            if pts > best_score:
+                best_score = pts
+                best_type = ptype
+    return best_type
+
+
+def _macro_alignment_check(
+    article: dict, macro_data: dict, industry_key: str
+) -> str:
+    """기사 톤 vs 거시 방향 비교. 'aligned'/'neutral'/'contrary' 반환."""
+    from core.macro_utils import _RISK_KW, _OPP_KW
+
+    text = article.get("title", "") + " " + article.get("body", "") + " " + article.get("body_text", "")
+
+    risk_count = sum(1 for kw in _RISK_KW if kw in text)
+    opp_count = sum(1 for kw in _OPP_KW if kw in text)
+
+    if risk_count == 0 and opp_count == 0:
+        return "neutral"
+
+    article_tone = "negative" if risk_count > opp_count else (
+        "positive" if opp_count > risk_count else "neutral"
+    )
+
+    if article_tone == "neutral":
+        return "neutral"
+
+    # 거시 방향 판단: macro_data의 trend 기반
+    profile = get_profile(industry_key)
+    weights = profile.get("macro_weights", {})
+    positive_trends = 0
+    negative_trends = 0
+    for label, item in macro_data.items():
+        if not isinstance(item, dict) or label not in weights:
+            continue
+        trend = item.get("trend", "→")
+        direction = _MACRO_DIRECTION.get(label, +1)
+        if trend == "▲":
+            if direction > 0:
+                positive_trends += 1
+            else:
+                negative_trends += 1
+        elif trend == "▼":
+            if direction < 0:
+                positive_trends += 1
+            else:
+                negative_trends += 1
+
+    if positive_trends == 0 and negative_trends == 0:
+        return "neutral"
+
+    macro_tone = "positive" if positive_trends > negative_trends else (
+        "negative" if negative_trends > positive_trends else "neutral"
+    )
+
+    if macro_tone == "neutral":
+        return "neutral"
+    if article_tone == macro_tone:
+        return "aligned"
+    return "contrary"
+
+
+def score_article_v2(
+    article: dict,
+    industry_key: str,
+    macro_data: dict | None = None,
+    signal: dict | None = None,
+) -> dict:
+    """
+    v2 스코어링. 내부적으로 기존 score_article() 호출.
+    Returns: {
+        "score": 1-5, "raw_score": float,
+        "confidence": 0.0-1.0,
+        "factors": [{"name": str, "score": float, "max": float}],
+        "policy_type": str|None,
+        "macro_alignment": "aligned"|"neutral"|"contrary"
+    }
+    """
+    text = article.get("title", "")
+    text += " " + article.get("body", "")
+    text += " " + article.get("body_text", "")
+    text += " " + article.get("summary_3lines", "")
+
+    a = _keyword_score(text, industry_key)
+    b = _macro_score(text, macro_data, industry_key)
+    c = _policy_score(text)
+    d = _urgency_score(text)
+
+    raw = a + b + c + d
+    stars = _score_to_stars(raw)
+
+    # confidence 결정
+    if macro_data and signal:
+        confidence = 0.9
+    elif macro_data:
+        confidence = 0.8
+    else:
+        confidence = 0.6
+
+    factors = [
+        {"name": "keyword", "score": a, "max": 30.0},
+        {"name": "macro", "score": b, "max": 30.0},
+        {"name": "policy", "score": c, "max": 20.0},
+        {"name": "urgency", "score": d, "max": 20.0},
+    ]
+
+    policy_type = _detect_policy_type(text)
+
+    if macro_data:
+        alignment = _macro_alignment_check(article, macro_data, industry_key)
+    else:
+        alignment = "neutral"
+
+    return {
+        "score": stars,
+        "raw_score": raw,
+        "confidence": confidence,
+        "factors": factors,
+        "policy_type": policy_type,
+        "macro_alignment": alignment,
+    }
+
+
+def batch_score_and_rank(
+    articles: list[dict],
+    industry_key: str,
+    macro_data: dict | None = None,
+) -> list[dict]:
+    """일괄 스코어링 + rank(1부터) + percentile(0-1) 추가. score 내림차순 정렬."""
+    if not articles:
+        return []
+
+    results = []
+    for art in articles:
+        scored = score_article_v2(art, industry_key, macro_data)
+        entry = copy.copy(art)
+        entry.update(scored)
+        results.append(entry)
+
+    # score 내림차순 정렬
+    results.sort(key=lambda x: (-x["score"], -x["raw_score"]))
+
+    n = len(results)
+    for i, item in enumerate(results):
+        item["rank"] = i + 1
+        item["percentile"] = round(1.0 - (i / n), 4) if n > 1 else 1.0
+
+    return results

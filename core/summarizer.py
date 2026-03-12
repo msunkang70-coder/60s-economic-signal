@@ -39,12 +39,30 @@ from core.utils import single_line
 # ──────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
 당신은 한국 {industry_label} 수출기업 전략 브리핑 전문가입니다.
+{industry_variables}
 아래 경제 기사를 읽고 다음 4가지 관점에서 각 1문장(30자 이내)으로 분석하세요.
 
 📊 Impact(영향): 이 변화가 {industry_label} 수출기업에 미치는 직접적 영향
 📉 Risk(리스크): 주의해야 할 위험 요소
 💡 Opportunity(기회): 활용 가능한 기회
 ✅ Action(즉시 행동): 지금 당장 확인해야 할 것 1가지
+
+[작성 규칙]
+- 각 항목에 구체적 수치, 기간, 또는 비율을 반드시 1개 이상 포함하세요
+- 추상적 표현("영향이 크다", "주의 필요") 대신 구체적 맥락을 기술하세요
+- 줄임표(…) 사용 금지
+
+[예시 — 좋은 분석]
+{{"impact": "환율 1,480원 돌파로 반도체 수출 마진 약 3%p 개선 전망",
+  "risk": "원자재 수입 원가 동반 상승 시 마진 개선분 상쇄 가능",
+  "opportunity": "달러 매출 비중 높은 기업은 2분기 내 환헷지 비율 조정 적기",
+  "action": "주요 원자재 공급사 결제 통화별 원가 변동률 즉시 점검"}}
+
+[예시 — 나쁜 분석 (이렇게 쓰지 마세요)]
+{{"impact": "영향이 있을 것으로 보입니다",
+  "risk": "리스크가 존재합니다",
+  "opportunity": "기회가 될 수 있습니다",
+  "action": "확인이 필요합니다"}}
 
 출력 형식 (반드시 아래 JSON으로):
 {{"impact": "...", "risk": "...", "opportunity": "...", "action": "..."}}
@@ -60,6 +78,27 @@ def _resolve_industry_label(industry_key: str) -> str:
         return get_profile(industry_key).get("label", "일반 수출기업")
     except ImportError:
         return "일반 수출기업"
+
+
+def _resolve_industry_variables(industry_key: str) -> str:
+    """산업별 핵심 경제 변수를 프롬프트용 텍스트로 반환."""
+    if not industry_key or industry_key == "일반":
+        return "이 산업의 핵심 변수: 환율, 수출증가율, 물가, 금리"
+    try:
+        from core.industry_config import get_profile
+        profile = get_profile(industry_key)
+        crit = profile.get("critical_variables", [])
+        weights = profile.get("macro_weights", {})
+        parts = []
+        if crit:
+            parts.append(f"핵심 경제 변수: {', '.join(crit)}")
+        # 가중치 높은 지표 강조
+        high_weight = [k for k, v in weights.items() if v >= 1.5]
+        if high_weight:
+            parts.append(f"특히 민감한 지표: {', '.join(high_weight)}")
+        return "\n".join(parts) if parts else ""
+    except ImportError:
+        return ""
 
 
 # ──────────────────────────────────────────────────────
@@ -244,13 +283,14 @@ def _structured_3line(
     title: str = "",
 ) -> str:
     """
-    전체 본문 맥락을 분석하는 구조화 3줄 요약 생성기 (v3).
+    전체 본문 맥락을 분석하는 구조화 3줄 요약 생성기 (v4).
 
     개선사항:
         1) 지배 주제어 분석 — 문서 전체에서 핵심 명사 빈도 추출
         2) 주제 일관성 필터 — dominant topic 포함 문장만 우선 탐색
         3) 논리 흐름 구조화 — WHAT → HOW → SO WHAT 역할 분리
         4) 위치 + 역할 + 주제 3중 점수로 최적 문장 선택
+        5) ★ v4: 제목 관련성 필터 — 제목 키워드와 무관한 사이드바/탐색 콘텐츠 제거
 
     출력 형식 (항상 정확히 3줄):
         ① [핵심 정책] 해당 정책의 목적·핵심 방향 (1문장)
@@ -266,6 +306,29 @@ def _structured_3line(
 
     # ── 전체 문장 풀 (중복 제거, 원래 순서 유지) ─────────────
     pool = list(dict.fromkeys(all_sents))
+
+    # ── ★ v4: 제목 관련성 필터 (사이드바/네비 문장 제거) ──────
+    # KDI 등 페이지에서 본문 외 사이드바·관련기사 목록이 포함되는 경우,
+    # 제목 키워드와 전혀 겹치지 않는 문장을 필터링한다.
+    if title:
+        _title_words = set(re.findall(r"[가-힣]{2,}", title))
+        _title_words -= {"있다", "없다", "이다", "된다", "한다", "하는", "위해",
+                         "관련", "등의", "또한", "이번", "지난", "올해", "현재",
+                         "경우", "때문", "이후", "사이", "이상", "이하"}
+        # 핵심 키워드만 추출 (조사 제거: 2~4자 한글 단어)
+        _core_words = {w for w in _title_words if 2 <= len(w) <= 4}
+        if _core_words and len(pool) > 5:
+            # 제목 핵심어가 문장 내에 부분 문자열로 포함되는지 체크
+            def _has_title_word(sent: str) -> bool:
+                return any(tw in sent for tw in _core_words)
+
+            _relevant = [s for s in pool if _has_title_word(s)]
+            # 관련 문장이 최소 5개 이상일 때만 필터 적용 (너무 적으면 원본 유지)
+            if len(_relevant) >= 5:
+                pool = _relevant
+                # top_sents도 동일 필터 적용 (fallback pool로 사이드바 문장 유입 방지)
+                _relevant_set = set(_relevant)
+                top_sents = [s for s in top_sents if s in _relevant_set]
 
     if not pool:
         return (
@@ -345,21 +408,14 @@ def _structured_3line(
 # ──────────────────────────────────────────────────────
 
 _LLM_PROMPT = """\
-당신은 정책 브리핑 전문 에디터입니다.
-아래 기사 본문을 읽고 정확히 3줄로 요약하세요.
-
-[출력 형식 — 반드시 이 형식만 사용]
-① [핵심 정책] (해당 정책 또는 이슈의 목적과 핵심 방향 1문장)
-② [주요 내용] (정책 실행 방식, 주요 조치, 핵심 수치 등 1문장)
-③ [영향·시사점] (글로벌 시장·산업·국가 전략에 미칠 영향 또는 의미 1문장)
+아래 기사를 읽고, 시스템 프롬프트의 4가지 관점(Impact, Risk, Opportunity, Action)에서 분석하세요.
 
 [작성 규칙]
 - 반드시 본문 전체 맥락을 기반으로 작성
-- 서로 다른 주제 혼합 금지 — 정책의 중심 흐름을 기준으로
-- 각 줄은 1~2문장 이내, 설명형 문장 (단순 키워드 나열 금지)
+- 각 항목에 구체적 수치, 기간, 또는 비율을 1개 이상 포함
+- 추상적 표현 금지 ("영향이 크다" 대신 구체적 맥락 기술)
 - 줄임표(…) 사용 금지
-- 정책 분석 보고서 수준의 자연스러운 한국어 문장
-- ①②③ 기호와 [레이블]은 반드시 포함
+- 각 항목 30자 이내, 한국어 자연스러운 문장
 {industry_context}
 [기사 제목]
 {title}
@@ -367,7 +423,8 @@ _LLM_PROMPT = """\
 [기사 본문]
 {body}
 
-요약:"""
+반드시 아래 JSON 형식으로만 출력하세요:
+{{"impact": "...", "risk": "...", "opportunity": "...", "action": "..."}}"""
 
 
 # ──────────────────────────────────────────────────────
@@ -443,8 +500,12 @@ def _summarize_with_llm(text: str, title: str = "", industry_key: str = "일반"
 
     industry_context = _build_industry_context(industry_key)
     industry_label = _resolve_industry_label(industry_key)
+    industry_variables = _resolve_industry_variables(industry_key)
     prompt = _LLM_PROMPT.format(title=title or "", body=body_trunc, industry_context=industry_context)
-    system_msg = SYSTEM_PROMPT.format(industry_label=industry_label).strip()
+    system_msg = SYSTEM_PROMPT.format(
+        industry_label=industry_label,
+        industry_variables=industry_variables,
+    ).strip()
 
     try:
         resp = requests.post(
@@ -493,10 +554,11 @@ def _parse_4frame_json(raw: str) -> dict | None:
         return None
 
     # JSON 블록 추출 (```json ... ``` 또는 { ... })
-    json_match = re.search(r"```json\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
     if json_match:
         json_str = json_match.group(1)
     else:
+        # 멀티라인 JSON 객체 매칭 (중첩 없는 단일 객체)
         json_match = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
         if json_match:
             json_str = json_match.group(0)
@@ -519,34 +581,91 @@ def _parse_4frame_json(raw: str) -> dict | None:
     return {k: data[k].strip() for k in required_keys}
 
 
+_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "summary_cache.json")
+_CACHE_TTL_DAYS = 7
+
+
+def _load_summary_cache() -> dict:
+    """요약 캐시 파일 로드."""
+    try:
+        import pathlib
+        p = pathlib.Path(_CACHE_PATH)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_summary_cache(cache: dict) -> None:
+    """요약 캐시 파일 저장."""
+    try:
+        import pathlib
+        p = pathlib.Path(_CACHE_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cache_key(text: str, industry_key: str) -> str:
+    """텍스트 + 산업 키 기반 캐시 키 생성."""
+    import hashlib
+    content = f"{industry_key}|{text[:500]}"
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
 def summarize_3line(
     text: str,
     title: str = "",
     industry_key: str = "일반",
 ) -> tuple[dict | str, str]:
     """
-    정책 브리핑용 요약 생성 (v4 공개 인터페이스).
+    정책 브리핑용 요약 생성 (v5 공개 인터페이스).
 
     반환: (summary, source)
       summary = dict {"impact","risk","opportunity","action"} (4-frame)
               | str (기존 3줄 텍스트 폴백)
-      source  = "groq" | "rule"
+      source  = "groq" | "rule" | "cache"
 
     우선순위:
+      0) 캐시 히트 시 캐시 반환 (TTL 7일)
       1) GROQ_API_KEY 있으면 Llama 3.3 70B → 4-frame JSON 시도
       2) JSON 파싱 실패 시 기존 3줄 텍스트 (LLM)
       3) 키 없거나 호출 실패 시 규칙 기반 폴백
     """
-    llm_result = _summarize_with_llm(text, title, industry_key=industry_key)
+    # title이 dict로 전달된 경우 방어
+    _title_str = title if isinstance(title, str) else str(title.get("title", "")) if isinstance(title, dict) else ""
+
+    # ── 캐시 확인 ──
+    _ck = _cache_key(text, industry_key)
+    _cache = _load_summary_cache()
+    if _ck in _cache:
+        _entry = _cache[_ck]
+        # TTL 확인
+        try:
+            _cached_at = datetime.fromisoformat(_entry.get("cached_at", ""))
+            if (datetime.now() - _cached_at).days < _CACHE_TTL_DAYS:
+                return _entry["summary"], "cache"
+        except Exception:
+            pass
+
+    # ── LLM 시도 ──
+    llm_result = _summarize_with_llm(text, _title_str, industry_key=industry_key)
     if llm_result:
         if isinstance(llm_result, dict):
             print(f"[summarizer] [OK] Groq 4-frame 요약 성공")
         else:
             print(f"[summarizer] [OK] Groq 요약 성공 ({len(llm_result)}자)")
+        # 캐시 저장
+        _cache[_ck] = {"summary": llm_result, "source": "groq", "cached_at": datetime.now().isoformat()}
+        _save_summary_cache(_cache)
         return llm_result, "groq"
 
+    # ── 규칙 기반 폴백 ──
     print(f"[summarizer] 규칙 기반 폴백 (Groq 키: {'있음' if _get_llm_key() else '없음'})")
-    return summarize_rule_based(text, title, max_sentences=3, industry_key=industry_key), "rule"
+    result = summarize_rule_based(text, _title_str, max_sentences=3, industry_key=industry_key)
+    return result, "rule"
 
 
 # ──────────────────────────────────────────────────────
@@ -564,16 +683,20 @@ def summarize_rule_based(
 
     점수 기준:
       - 경제 키워드 포함: +2.0 (키워드당)
+      - 리스크/기회 키워드: +3.0 (키워드당)
       - 문서 앞 30% 위치: +3.0
       - 숫자·단위 포함:   +2.0
       - 적정 문장 길이(30~100자): +1.0
       - 제목 단어 overlap: +1.5 (단어당)
       - 산업 키워드 매칭: +2.5 (키워드당)
 
-    ★ v3: 주제 일관성 필터 + 개선된 _structured_3line 사용.
+    ★ v4: 리스크/기회 키워드 가중치 + 산업별 핵심변수 부스트 추가.
     """
     if not text:
-        return title or "본문 없음"
+        return title if isinstance(title, str) else "본문 없음"
+
+    # title이 dict로 전달된 경우 방어
+    _title_str = title if isinstance(title, str) else str(title.get("title", "")) if isinstance(title, dict) else ""
 
     raw_sents = re.split(r"(?<=[.?!다요])\s+|\n", text)
     sentences = [s.strip() for s in raw_sents if 15 <= len(s.strip()) <= 200]
@@ -581,17 +704,28 @@ def summarize_rule_based(
     if not sentences:
         return text.strip()
 
-    # 산업 키워드 로드
+    # 산업 키워드 + 핵심 변수 로드
     _ind_kws: list[str] = []
+    _crit_vars: list[str] = []
     if industry_key and industry_key != "일반":
         try:
             from core.industry_config import get_profile
-            _ind_kws = get_profile(industry_key).get("keywords", [])
+            _profile = get_profile(industry_key)
+            _ind_kws = _profile.get("keywords", [])
+            _crit_vars = _profile.get("critical_variables", [])
         except ImportError:
             pass
 
+    # 리스크/기회 키워드 (macro_utils에서 import)
+    try:
+        from core.macro_utils import _ECON_KW, _RISK_KW, _OPP_KW
+    except ImportError:
+        _ECON_KW = []
+        _RISK_KW = []
+        _OPP_KW = []
+
     total = len(sentences)
-    title_words = set(re.findall(r"[가-힣]{2,}", title)) if title else set()
+    title_words = set(re.findall(r"[가-힣]{2,}", _title_str)) if _title_str else set()
 
     scored = []
     for idx, sent in enumerate(sentences):
@@ -620,6 +754,13 @@ def summarize_rule_based(
         # 6) 산업 키워드 가중치
         score += sum(2.5 for kw in _ind_kws if kw in sent)
 
+        # 7) 리스크/기회 키워드 가중치 (관련도 높은 문장 부스트)
+        score += sum(3.0 for kw in _RISK_KW if kw in sent)
+        score += sum(3.0 for kw in _OPP_KW if kw in sent)
+
+        # 8) 산업별 핵심 변수 매칭 (환율, CPI 등)
+        score += sum(3.0 for cv in _crit_vars if cv.replace("(", "").replace(")", "") in sent)
+
         scored.append((score, idx, sent))
 
     # 점수 내림차순 → 원래 순서(idx) 오름차순으로 최종 정렬
@@ -628,10 +769,8 @@ def summarize_rule_based(
     extracted = [s for _, _, s in top]
 
     # ── 구조화 3줄 요약: max_sentences >= 3이면 항상 적용 ─
-    # 이전: len(extracted) >= 2 조건으로 본문이 짧으면 건너뜀 → 형식 불일치 발생
-    # 수정: sentences가 1개 이상이면 무조건 구조화 포맷 적용
     if max_sentences >= 3 and sentences:
-        return _structured_3line(sentences, extracted, title)
+        return _structured_3line(sentences, extracted, _title_str)
 
     # 2줄 이하 요청 시에만 단순 join
     summary = " ".join(extracted)
@@ -1394,3 +1533,166 @@ def render_script_markdown(script: str) -> dict:
         sections[key] = "\n".join(ln for ln in lines if ln.strip())
 
     return sections
+
+
+# ──────────────────────────────────────────────────────
+# Enhanced Summarize — 심층 4-Frame 분석 래퍼 (Phase 13)
+# ──────────────────────────────────────────────────────
+
+def enhanced_summarize(
+    text: str,
+    title: str = "",
+    doc_id: str = "",
+    industry_key: str = "일반",
+) -> dict:
+    """기존 3줄 요약 + 심층 4-Frame 분석을 통합 반환.
+
+    Returns
+    -------
+    dict
+        {
+            "summary": dict | str,   # summarize_3line 결과
+            "summary_source": str,   # "groq" | "rule" | "cache"
+            "deep": dict,            # DeepAnalysis.to_dict()
+        }
+    """
+    # 1) 기존 3줄 요약
+    summary, source = summarize_3line(text, title, industry_key)
+
+    # 2) 심층 분석 (import 지연으로 순환 참조 방지)
+    try:
+        from core.llm_analyzer import analyze_article_deep
+        deep = analyze_article_deep(
+            text=text,
+            title=title,
+            doc_id=doc_id,
+            industry_key=industry_key,
+        )
+        deep_dict = deep.to_dict()
+    except Exception:
+        deep_dict = {
+            "impact": "", "risk": "", "opportunity": "", "action": "",
+            "confidence": 0.0, "source": "error",
+        }
+
+    return {
+        "summary": summary,
+        "summary_source": source,
+        "deep": deep_dict,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Article Intelligence — summarize_executive / generate_comparison_summary
+# ════════════════════════════════════════════════════════════════════════════
+
+def summarize_executive(
+    text: str,
+    title: str,
+    macro_data: dict | None = None,
+    industry_key: str = "일반",
+) -> dict:
+    """
+    경영진용 요약.
+    Returns: {
+        "headline": str (title 기반 20자 이내),
+        "body": str (summarize_rule_based 호출),
+        "recommendation": str (리스크/기회 키워드 기반),
+        "urgency": "high"|"medium"|"low" (긴급 키워드 수 기반),
+        "relevance_score": 0.0-1.0 (경제 키워드 매칭 비율)
+    }
+    """
+    from core.macro_utils import _RISK_KW, _OPP_KW, _ECON_KW
+
+    # headline: title 20자 이내로 잘라냄
+    headline = (title[:20] if len(title) > 20 else title) if title else "제목 없음"
+
+    # body
+    body = summarize_rule_based(text, title, industry_key=industry_key)
+
+    # recommendation
+    combined = (title or "") + " " + (text or "")
+    risk_count = sum(1 for kw in _RISK_KW if kw in combined)
+    opp_count = sum(1 for kw in _OPP_KW if kw in combined)
+
+    if risk_count > opp_count:
+        recommendation = "리스크 대응 필요"
+    elif opp_count > risk_count:
+        recommendation = "기회 활용 검토"
+    else:
+        recommendation = "모니터링 지속"
+
+    # urgency
+    _URGENT_KW = ["즉시", "긴급", "시행", "발효", "폐지", "당장", "비상", "위기"]
+    urgent_count = sum(1 for kw in _URGENT_KW if kw in combined)
+    if urgent_count >= 3:
+        urgency = "high"
+    elif urgent_count >= 1:
+        urgency = "medium"
+    else:
+        urgency = "low"
+
+    # relevance_score
+    if _ECON_KW:
+        matched = sum(1 for kw in _ECON_KW if kw in combined)
+        relevance_score = round(min(1.0, matched / len(_ECON_KW)), 2)
+    else:
+        relevance_score = 0.0
+
+    return {
+        "headline": headline,
+        "body": body,
+        "recommendation": recommendation,
+        "urgency": urgency,
+        "relevance_score": relevance_score,
+    }
+
+
+def generate_comparison_summary(
+    articles: list[dict], industry_key: str = "일반"
+) -> str:
+    """2-5개 기사 비교 요약. 공통 주제 + 차이점. 빈 리스트면 빈 문자열."""
+    if not articles:
+        return ""
+
+    from core.macro_utils import _ECON_KW
+
+    # 각 기사에서 경제 키워드 추출
+    article_keywords: list[set] = []
+    titles: list[str] = []
+    for art in articles:
+        title = art.get("title", "")
+        body = art.get("body", "") or art.get("body_text", "")
+        combined = title + " " + body
+        titles.append(title)
+        kws = {kw for kw in _ECON_KW if kw in combined}
+        article_keywords.append(kws)
+
+    # 공통 키워드
+    if article_keywords:
+        common = article_keywords[0]
+        for kws in article_keywords[1:]:
+            common = common & kws
+    else:
+        common = set()
+
+    # 각 기사의 고유 키워드
+    unique_per_article: list[set] = []
+    for kws in article_keywords:
+        unique_per_article.append(kws - common)
+
+    # 비교 요약 생성
+    parts: list[str] = []
+    if common:
+        parts.append(f"공통 주제: {', '.join(sorted(common))}")
+    else:
+        parts.append("공통 주제: 명확한 공통 주제 없음")
+
+    for i, (title, unique) in enumerate(zip(titles, unique_per_article)):
+        short_title = title[:30] if len(title) > 30 else title
+        if unique:
+            parts.append(f"기사{i+1}({short_title}): {', '.join(sorted(unique))}")
+        else:
+            parts.append(f"기사{i+1}({short_title}): 고유 키워드 없음")
+
+    return " | ".join(parts)
