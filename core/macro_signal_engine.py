@@ -9,30 +9,13 @@ core/macro_signal_engine.py
 """
 
 from core.signal_interpreter import interpret_all_signals
-
-# ── 지표별 색상 판정 규칙 ─────────────────────────────────────────
-# (label_keyword, favorable_trend) → green/yellow/red
-# favorable_trend: trend 방향이 수출업에 우호적이면 True
-_FAVORABLE = {
-    "환율":   {"▲": "green",  "▼": "red",    "→": "yellow"},  # 환율 상승 = 수출 유리
-    "수출증가율": {"▲": "green",  "▼": "red",    "→": "yellow"},
-    "수출물가지수": {"▲": "green", "▼": "yellow", "→": "yellow"},
-    "수입물가지수": {"▲": "red",   "▼": "green",  "→": "yellow"},
-    "소비자물가": {"▲": "red",   "▼": "green",  "→": "yellow"},
-    "기준금리":  {"▲": "yellow", "▼": "green",  "→": "yellow"},
-    "엔":        {"▲": "yellow", "▼": "yellow", "→": "yellow"},  # 엔화 방향성 복잡
-}
-
-_COLOR_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
-_COLOR_LABEL = {"green": "기회", "yellow": "주의", "red": "위험"}
-
-# 임계값 상태별 색상 override
-_STATUS_OVERRIDE = {
-    "danger":  "red",
-    "warning": "red",
-    "caution": "yellow",
-    "normal":  None,   # trend 기반 색상 그대로 사용
-}
+from core.constants import (
+    FAVORABLE as _FAVORABLE,
+    COLOR_EMOJI as _COLOR_EMOJI,
+    COLOR_LABEL as _COLOR_LABEL,
+    STATUS_OVERRIDE as _STATUS_OVERRIDE,
+    thresholds_signal_engine as _thresholds_signal_engine,
+)
 
 
 def _label_to_favor_key(label: str) -> str:
@@ -56,16 +39,7 @@ def _label_to_favor_key(label: str) -> str:
 
 def _get_threshold_status(label: str, value_str: str) -> str:
     """임계값 대비 상태 반환 (normal/caution/warning/danger)."""
-    # app.py의 _THRESHOLDS 데이터를 여기서 재정의 (중복 방지)
-    _THRESHOLDS = {
-        "환율(원/$)":    (1_300, 1_380, 1_500, 1_600),
-        "소비자물가(CPI)": (-1.0, 0.0, 2.5, 4.0),
-        "수출증가율":    (-10.0, -5.0, 15.0, 25.0),
-        "기준금리":      (1.0, 2.0, 3.5, 4.5),
-        "원/100엔 환율": (780, 850, 1_050, 1_150),
-        "수출물가지수":  (-5.0, -3.0, 5.0, 8.0),
-        "수입물가지수":  (-5.0, -3.0, 5.0, 8.0),
-    }
+    _THRESHOLDS = _thresholds_signal_engine()
     try:
         val = float(str(value_str).replace(",", "").replace("+", ""))
     except (ValueError, TypeError):

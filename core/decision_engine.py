@@ -5,32 +5,10 @@ core/decision_engine.py
 
 from core.industry_config import get_profile
 from core.utils import safe_execute
+from core.constants import thresholds_simple
 
-# ── 임계값 (today_signal.py와 동일) ──────────────────────
-_THRESHOLDS = {
-    "환율(원/$)": [
-        (0,    1380, "normal"),
-        (1380, 1450, "caution"),
-        (1450, 1500, "warning"),
-        (1500, 9999, "danger"),
-    ],
-    "소비자물가(CPI)": [
-        (0,   2.0, "normal"),
-        (2.0, 3.0, "caution"),
-        (3.0, 9999, "danger"),
-    ],
-    "수출증가율": [
-        (-9999, -10, "danger"),
-        (-10,     0, "caution"),
-        (0,      15, "normal"),
-        (15,   9999, "caution"),
-    ],
-    "기준금리": [
-        (0,   2.0, "caution"),
-        (2.0, 3.5, "normal"),
-        (3.5, 9999, "warning"),
-    ],
-}
+# ── 임계값: core/constants.py 단일 소스에서 로드 ──────────────────────
+_THRESHOLDS = thresholds_simple()
 
 
 def _get_status(label: str, value: float) -> str:
@@ -784,6 +762,112 @@ DECISION_TEMPLATES: dict[str, dict[str, dict[str, list[dict]]]] = {
 }
 
 
+# ── Module load time validation (F-07) ─────────────────────────
+# 문제: 산업-카테고리-상태 조합이 로드 시점에 검증되지 않으면 runtime KeyError 가능
+# 해법: 모듈 로드 시 모든 필수 조합 검증 및 누락분 로깅
+# ───────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════
+# DECISION_TEMPLATES 검증 함수 (F-07: Runtime KeyError 방지)
+# ══════════════════════════════════════════════════════
+
+_REQUIRED_INDUSTRIES = ["반도체", "자동차", "화학", "소비재", "배터리", "조선", "철강", "일반"]
+_REQUIRED_CATEGORIES = ["환율", "수출", "물가", "금리"]
+_REQUIRED_STATUSES = ["danger", "warning", "caution", "normal"]
+
+
+def _validate_decision_templates() -> list[str]:
+    """DECISION_TEMPLATES 검증 및 누락된 조합 로깅.
+
+    Returns:
+        누락된 industry-category-status 조합 목록
+    """
+    import logging
+    logger = logging.getLogger("decision_engine")
+
+    missing_combinations = []
+
+    for industry in _REQUIRED_INDUSTRIES:
+        if industry not in DECISION_TEMPLATES:
+            msg = f"Missing industry: '{industry}'"
+            logger.warning(msg)
+            missing_combinations.append(msg)
+            continue
+
+        industry_templates = DECISION_TEMPLATES[industry]
+
+        for category in _REQUIRED_CATEGORIES:
+            if category not in industry_templates:
+                msg = f"Missing category: {industry}/{category}"
+                logger.warning(msg)
+                missing_combinations.append(msg)
+                continue
+
+            category_templates = industry_templates[category]
+
+            for status in _REQUIRED_STATUSES:
+                if status not in category_templates:
+                    msg = f"Missing status: {industry}/{category}/{status}"
+                    logger.warning(msg)
+                    missing_combinations.append(msg)
+                elif not isinstance(category_templates[status], list) or len(category_templates[status]) == 0:
+                    msg = f"Empty options: {industry}/{category}/{status}"
+                    logger.warning(msg)
+                    missing_combinations.append(msg)
+
+    if missing_combinations:
+        logger.warning(f"DECISION_TEMPLATES validation found {len(missing_combinations)} issues")
+    else:
+        logger.info("DECISION_TEMPLATES validation passed")
+
+    return missing_combinations
+
+
+def _get_decision_template(
+    industry_key: str,
+    category: str,
+    status: str,
+) -> list[dict]:
+    """안전한 템플릿 조회 (누락된 조합에 대해 sensible default 반환).
+
+    Parameters:
+        industry_key: 산업 키
+        category: 카테고리 (환율/수출/물가/금리)
+        status: 상태 (danger/warning/caution/normal)
+
+    Returns:
+        해당 조합의 옵션 리스트, 없으면 일반 산업의 동일 category-status 반환,
+        그것도 없으면 일반 산업의 환율-normal 반환.
+    """
+    import logging
+    logger = logging.getLogger("decision_engine")
+
+    # 1차: 정확한 조합 조회
+    if (industry_key in DECISION_TEMPLATES
+        and category in DECISION_TEMPLATES[industry_key]
+        and status in DECISION_TEMPLATES[industry_key][category]):
+        return DECISION_TEMPLATES[industry_key][category][status]
+
+    # 2차 fallback: 같은 카테고리의 일반 산업 버전
+    if (industry_key != "일반"
+        and "일반" in DECISION_TEMPLATES
+        and category in DECISION_TEMPLATES["일반"]
+        and status in DECISION_TEMPLATES["일반"][category]):
+        logger.debug(f"Fallback to 일반 template: {industry_key}/{category}/{status}")
+        return DECISION_TEMPLATES["일반"][category][status]
+
+    # 3차 fallback: 환율-normal (최후의 수단)
+    if ("일반" in DECISION_TEMPLATES
+        and "환율" in DECISION_TEMPLATES["일반"]
+        and "normal" in DECISION_TEMPLATES["일반"]["환율"]):
+        logger.warning(f"Ultimate fallback to 환율-normal: {industry_key}/{category}/{status}")
+        return DECISION_TEMPLATES["일반"]["환율"]["normal"]
+
+    # 4차 fallback: 빈 리스트
+    logger.error(f"No template found for {industry_key}/{category}/{status}")
+    return []
+
+
 _INDICATOR_TYPE_TO_CATEGORY = {
     "fx_usd_rise": "환율",
     "fx_usd_stable": "환율",
@@ -843,12 +927,8 @@ def generate_decision_options(
 
     status = _get_status(label, val)
 
-    # 산업별 템플릿 조회 (fallback: 일반)
-    industry_templates = DECISION_TEMPLATES.get(industry_key, DECISION_TEMPLATES["일반"])
-    # 카테고리별 조회 (fallback: 환율)
-    category_templates = industry_templates.get(category, industry_templates.get("환율", {}))
-    # 상태별 조회 (fallback: normal)
-    options = category_templates.get(status, category_templates.get("normal", []))
+    # 안전한 템플릿 조회 (F-07 fix: _get_decision_template으로 KeyError 방지)
+    options = _get_decision_template(industry_key, category, status)
 
     result = []
     for idx, opt in enumerate(options[:3]):
@@ -856,6 +936,44 @@ def generate_decision_options(
             "option": chr(65 + idx),
             **opt,
         })
+
+    # V9: 전략 옵션 rationale에 실제 데이터 주입 (구체적 근거 강화)
+    if signal and result:
+        sig_label = signal.get("label", "")
+        sig_val = signal.get("value", "")
+        sig_trend = signal.get("trend", "→")
+        delta_pct = signal.get("delta_pct", 0)
+
+        # 변동 정보 문자열 구성
+        if delta_pct and delta_pct >= 1.0:
+            trend_sym = "+" if sig_trend == "▲" else ("-" if sig_trend == "▼" else "")
+            data_context = f"[{sig_label} {sig_val} {sig_trend} ({trend_sym}{delta_pct}%)]"
+        elif sig_val:
+            data_context = f"[{sig_label} {sig_val} {sig_trend}]"
+        else:
+            data_context = ""
+
+        # 복합 신호가 있으면 추가 컨텍스트
+        composites = signal.get("composite_signals", [])
+        composite_context = ""
+        if composites:
+            comp_names = [c.get("name", "") for c in composites[:2]]
+            composite_context = f" (복합 신호: {', '.join(comp_names)})"
+
+        if data_context:
+            for opt in result:
+                opt["rationale"] = f"{data_context} {opt['rationale']}{composite_context}"
+
+    # V6-perf: 긴급도 분화 — normal/caution 상태에서 3개 옵션이 동일 urgency면 차등 배분
+    if len(result) >= 3 and status in ("normal", "caution"):
+        urgencies = [r.get("urgency") for r in result]
+        if len(set(urgencies)) == 1:  # 모두 동일한 경우만
+            _urg_map = {
+                "normal":  ["이번 주", "이번 달", "이번 달"],
+                "caution": ["이번 주", "이번 달", "이번 달"],
+            }
+            for i, urg in enumerate(_urg_map.get(status, urgencies)):
+                result[i]["urgency"] = urg
 
     # Company Profile 기반 전략 difficulty 필터
     if company_profile and result:
@@ -918,13 +1036,8 @@ def generate_scenario_strategies(
     category = _label_to_category(label)
     status = _get_status(label, value)
 
-    industry_templates = DECISION_TEMPLATES.get(
-        industry_key, DECISION_TEMPLATES["일반"]
-    )
-    category_templates = industry_templates.get(
-        category, industry_templates.get("환율", {})
-    )
-    options = category_templates.get(status, category_templates.get("normal", []))
+    # 안전한 템플릿 조회 (F-07 fix: _get_decision_template으로 KeyError 방지)
+    options = _get_decision_template(industry_key, category, status)
 
     result = []
     for idx, opt in enumerate(options[:3]):
@@ -936,8 +1049,30 @@ def generate_scenario_strategies(
     return result
 
 
+# Urgency numeric mapping for sorting (L-03 fix)
+URGENCY_MAPPING = {
+    "즉시": 1,
+    "이번 주": 2,
+    "이번 달": 3,
+    "분기 내": 4,
+    "중장기": 5,
+}
+
 _URGENCY_RANK = {"즉시": 3, "이번 주": 2, "이번 달": 1}
 _IMPACT_RANK = {"높음": 3, "중간": 2, "낮음": 1}
+
+
+def urgency_sort_key(urgency_text: str) -> int:
+    """Urgency 텍스트를 숫자로 변환 (sorting 용). L-03 fix.
+
+    Args:
+        urgency_text: "즉시", "이번 주", "이번 달", "분기 내", "중장기" 등
+
+    Returns:
+        정렬 가능한 정수값. 1 (즉시) ~ 5 (중장기).
+        미등록 값은 999 (맨 뒤)로 반환.
+    """
+    return URGENCY_MAPPING.get(urgency_text, 999)
 
 
 def compare_strategies(
@@ -977,3 +1112,12 @@ def compare_strategies(
         "urgency_shift": round(urgency_b - urgency_a),
         "risk_delta": round(impact_b - impact_a),
     }
+
+
+# ── F-07: Module load time validation ────────────────────────────
+# DECISION_TEMPLATES 구조 검증 (module import 시점에 실행)
+_validation_issues = _validate_decision_templates()
+if _validation_issues:
+    import logging
+    logger = logging.getLogger("decision_engine")
+    logger.info(f"DECISION_TEMPLATES validation completed with {len(_validation_issues)} warnings")

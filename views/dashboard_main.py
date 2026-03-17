@@ -237,9 +237,9 @@ def render_impact_strip(macro_data: dict) -> None:
         </div>"""
 
     st.html(f"""
-    <div style="display:flex;align-items:center;
+    <div style="display:flex;align-items:center;flex-wrap:wrap;
                 background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;
-                margin-bottom:20px;overflow:hidden;font-family:'Inter',sans-serif">
+                margin-bottom:20px;overflow-x:auto;font-family:'Inter',sans-serif">
       {cells_html}
     </div>
     """)
@@ -290,21 +290,51 @@ def render_industry_variable_card(industry_key: str, docs: list, macro_data: dic
     except ImportError:
         _ext_kws = []
 
+    # V9: CV → macro_data 키 퍼지 매핑 (정확한 키 불일치 보완)
+    _CV_MACRO_ALIAS = {
+        "소비자물가": "소비자물가(CPI)",
+        "국제유가": "수입물가지수",        # 유가 → 수입물가 대리 지표
+        "원자재 가격": "수입물가지수",     # 원자재 → 수입물가 대리
+    }
+
     items_html = ""
+    _used_macro_keys = set()  # V9.1: 중복 매핑 감지용
     for cv in cv_list:
         # 거시지표와 매칭되는 변수는 현재값 표시
+        # V9: 정확한 키 매칭 + 퍼지 매핑 + 부분 매칭 순서로 검색
         macro_match = macro_data.get(cv)
-        if macro_match:
+        _matched_key = cv if macro_match else None
+        if not macro_match and cv in _CV_MACRO_ALIAS:
+            _alias_key = _CV_MACRO_ALIAS[cv]
+            macro_match = macro_data.get(_alias_key)
+            _matched_key = _alias_key if macro_match else None
+        if not macro_match:
+            # 부분 문자열 매칭 (예: "소비자물가" → "소비자물가(CPI)")
+            for mk in macro_data:
+                if cv in mk or mk in cv:
+                    macro_match = macro_data[mk]
+                    _matched_key = mk
+                    break
+
+        if macro_match and isinstance(macro_match, dict):
             val = macro_match.get("value", "")
             trend = macro_match.get("trend", "")
             status, _, status_label = _get_threshold_status(cv, str(val))
             status_badge = f' <span style="color:#dc2626;font-size:11px">⚠️{status_label}</span>' if status in ("warning", "danger", "caution") else ""
-            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → {val} {trend}{status_badge}</div>'
+            # V9.1: 동일 macro 키에 이미 매핑된 CV가 있으면 중복 표시
+            _proxy_note = ""
+            if _matched_key and _matched_key in _used_macro_keys:
+                _proxy_note = f' <span style="color:#999;font-size:10px">(≈ {_matched_key})</span>'
+            if _matched_key:
+                _used_macro_keys.add(_matched_key)
+            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → {val} {trend}{status_badge}{_proxy_note}</div>'
         else:
             # 동의어 매핑 + 확장 키워드로 기사 매칭 수 카운트
             synonyms = _CV_SYNONYMS.get(cv, [cv.replace("(", "").replace(")", "")])
+            # V9: CV 자체 단어도 매칭 키워드에 추가
+            cv_words = [w for w in cv.replace("(", " ").replace(")", " ").split() if len(w) >= 2]
             # 확장 키워드에서 관련 있는 것도 추가
-            all_match_kws = list(synonyms) + [kw for kw in _ext_kws if any(s in kw or kw in s for s in synonyms)]
+            all_match_kws = list(set(synonyms + cv_words)) + [kw for kw in _ext_kws if any(s in kw or kw in s for s in synonyms)]
             count = sum(
                 1 for d in docs
                 if any(
@@ -312,7 +342,10 @@ def render_industry_variable_card(industry_key: str, docs: list, macro_data: dic
                     for syn in [s.lower() for s in all_match_kws]
                 )
             )
-            items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → 관련 기사 {count}건</div>'
+            if count > 0:
+                items_html += f'<div style="margin:4px 0;font-size:13px">📌 {cv} → 관련 기사 {count}건</div>'
+            else:
+                items_html += f'<div style="margin:4px 0;font-size:13px;color:#9ca3af">📌 {cv} → 모니터링 중</div>'
 
     # ── KITA 수출 현황 추가 ──────────────────────────────────
     kita_html = ""
@@ -418,30 +451,78 @@ def render_risk_gauge(risk_data: dict) -> None:
 # ── 충격 알림 배너 ────────────────────────────────────────────
 
 def render_shock_alert_banner(shocks: list) -> None:
-    """충격 알림 배너. 빈 리스트면 패스. severity별 색상 구분."""
+    """V11: 충격 알림 배너 — 신뢰도 배지 + 지표별 맞춤 메시지 + 이력 링크.
+
+    shock_detector.py의 V11 출력 형식 지원:
+      severity: extreme/major/minor
+      confidence: high/medium
+      alert_msg: 한국어 알림 메시지
+      shock_type: spike/plunge/reversal
+    기존 형식(critical/high/medium/low)도 하위 호환.
+    """
     if not shocks:
         return
 
+    # V11: severity 매핑 (신규 + 기존 호환)
     _SEV_STYLES = {
-        "critical": {"bg": "#fef2f2", "border": "#dc2626", "icon": "🚨", "text": "#991b1b"},
-        "high":     {"bg": "#fff7ed", "border": "#f97316", "icon": "⚠️", "text": "#9a3412"},
-        "medium":   {"bg": "#fefce8", "border": "#f59e0b", "icon": "⚡", "text": "#92400e"},
-        "low":      {"bg": "#eff6ff", "border": "#3b82f6", "icon": "ℹ️", "text": "#1e40af"},
+        "extreme":  {"bg": "#fef2f2", "border": "#dc2626", "icon": "🚨", "text": "#991b1b", "label": "심각"},
+        "major":    {"bg": "#fff7ed", "border": "#f97316", "icon": "⚠️", "text": "#9a3412", "label": "주의"},
+        "minor":    {"bg": "#eff6ff", "border": "#3b82f6", "icon": "ℹ️", "text": "#1e40af", "label": "참고"},
+        # 기존 호환
+        "critical": {"bg": "#fef2f2", "border": "#dc2626", "icon": "🚨", "text": "#991b1b", "label": "심각"},
+        "high":     {"bg": "#fff7ed", "border": "#f97316", "icon": "⚠️", "text": "#9a3412", "label": "주의"},
+        "medium":   {"bg": "#fefce8", "border": "#f59e0b", "icon": "⚡", "text": "#92400e", "label": "참고"},
+        "low":      {"bg": "#eff6ff", "border": "#3b82f6", "icon": "ℹ️", "text": "#1e40af", "label": "참고"},
+    }
+
+    # V11: 신뢰도 배지 스타일
+    _CONF_BADGE = {
+        "high":   {"bg": "#dcfce7", "color": "#166534", "label": "신뢰도 높음"},
+        "medium": {"bg": "#fef3c7", "color": "#92400e", "label": "신뢰도 보통"},
     }
 
     items_html = ""
     for shock in shocks:
         severity = shock.get("severity", "medium")
-        style = _SEV_STYLES.get(severity, _SEV_STYLES["medium"])
-        title = shock.get("title", "충격 감지")
-        desc = shock.get("description", "")
-        indicator = shock.get("indicator", "")
+        style = _SEV_STYLES.get(severity, _SEV_STYLES["minor"])
 
-        indicator_html = (
-            f'<span style="background:rgba(0,0,0,0.06);padding:2px 8px;border-radius:6px;'
-            f'font-size:11px;font-weight:600;margin-left:8px">{indicator}</span>'
-            if indicator else ""
-        )
+        # V11: alert_msg 우선, 없으면 title/description 폴백
+        alert_msg = shock.get("alert_msg", "")
+        title = alert_msg or shock.get("title", "충격 감지")
+        desc = shock.get("description", "")
+
+        indicator = shock.get("indicator", "")
+        magnitude = shock.get("magnitude", 0)
+        confidence = shock.get("confidence", "")
+        shock_type = shock.get("shock_type", "")
+
+        # V11: 지표 + 변동폭 배지
+        indicator_html = ""
+        if indicator:
+            indicator_html = (
+                f'<span style="background:rgba(0,0,0,0.06);padding:2px 8px;border-radius:6px;'
+                f'font-size:11px;font-weight:600;margin-left:8px">{indicator}</span>'
+            )
+        if magnitude:
+            indicator_html += (
+                f'<span style="background:{style["border"]}15;color:{style["text"]};'
+                f'padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;'
+                f'margin-left:4px">{magnitude:.1f}%</span>'
+            )
+
+        # V11: 신뢰도 배지
+        conf_html = ""
+        if confidence and confidence in _CONF_BADGE:
+            cb = _CONF_BADGE[confidence]
+            conf_html = (
+                f'<span style="background:{cb["bg"]};color:{cb["color"]};'
+                f'padding:2px 8px;border-radius:6px;font-size:10px;font-weight:600;'
+                f'margin-left:6px">{cb["label"]}</span>'
+            )
+
+        # V11: 충격 유형 이모지
+        _type_emoji = {"spike": "📈", "plunge": "📉", "reversal": "🔄"}.get(shock_type, "⚡")
+
         desc_html = (
             f'<div style="font-size:12px;color:{style["text"]};margin-top:4px;opacity:0.85">{desc}</div>'
             if desc else ""
@@ -452,10 +533,10 @@ def render_shock_alert_banner(shocks: list) -> None:
                     border-left:4px solid {style['border']};border-radius:10px;
                     padding:12px 16px;margin-bottom:8px;font-family:'Inter',sans-serif;
                     box-shadow:0 2px 8px rgba(0,0,0,0.04)">
-          <div style="display:flex;align-items:center">
-            <span style="font-size:16px;margin-right:8px">{style['icon']}</span>
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
+            <span style="font-size:16px;margin-right:4px">{_type_emoji}</span>
             <span style="font-size:13px;font-weight:700;color:{style['text']}">{title}</span>
-            {indicator_html}
+            {indicator_html}{conf_html}
           </div>
           {desc_html}
         </div>"""

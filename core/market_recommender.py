@@ -11,6 +11,7 @@ import os
 from typing import Any
 
 from core.industry_config import get_profile
+from core.utils import safe_execute
 
 # ── 산업별 HS 코드 매핑 ──────────────────────────────────────────
 _INDUSTRY_HS: dict[str, str] = {
@@ -129,6 +130,7 @@ def _calc_cagr(values: list[float]) -> float:
     return (ratio ** (1 / n) - 1) * 100
 
 
+@safe_execute(default=[], log_prefix="market_recommender")
 def recommend_markets(
     industry_key: str,
     macro_data: dict[str, Any],

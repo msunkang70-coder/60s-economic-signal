@@ -287,6 +287,150 @@ def send_summary_email(results: list[dict]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# 4. 이상치 알림 (이메일 + Slack 이중 발송)
+# ─────────────────────────────────────────────────────────────
+
+def send_anomaly_alert(anomalies: list[dict]) -> bool:
+    """이상치 탐지 결과를 이메일 + Slack으로 이중 알림 발송한다.
+
+    critical/warning 이상치만 필터링하여 발송.
+
+    Args:
+        anomalies: detect_anomalies() 반환 리스트
+            각 항목: {"indicator", "value", "z_score", "severity", "unit", ...}
+
+    Returns:
+        True if at least one channel succeeded, False otherwise.
+    """
+    alerts = [a for a in anomalies if a.get("severity") in ("critical", "warning")]
+    if not alerts:
+        return False
+
+    now = datetime.now()
+    success = False
+
+    # ── Slack 알림 ──────────────────────────────────────────
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+    if webhook_url:
+        lines = []
+        for a in alerts:
+            icon = "🔴" if a.get("severity") == "critical" else "🟠"
+            lines.append(
+                f"{icon} *{a['indicator']}*: {a.get('value', '?')}{a.get('unit', '')} "
+                f"(Z={a.get('z_score', 0):.1f}, {a.get('severity', 'unknown')})"
+            )
+        text = (
+            f"⚠️ *이상치 탐지 알림* — {now.strftime('%Y-%m-%d %H:%M')}\n"
+            f"{len(alerts)}건의 이상치가 감지되었습니다.\n\n"
+            + "\n".join(lines)
+        )
+        try:
+            import requests
+            resp = requests.post(webhook_url, json={"text": text}, timeout=10)
+            if resp.status_code == 200:
+                print(f"[notifier] ✓ Slack 이상치 알림 발송 ({len(alerts)}건)")
+                success = True
+            else:
+                print(f"[notifier] Slack 오류: {resp.status_code}")
+        except Exception as e:
+            print(f"[notifier] Slack 발송 실패: {e}")
+
+    # ── 이메일 알림 ─────────────────────────────────────────
+    admin_email = os.environ.get("ADMIN_EMAIL", "").strip()
+    sender = os.environ.get("EMAIL_SENDER", "").strip()
+    password = os.environ.get("EMAIL_PASSWORD", "").strip()
+
+    if admin_email and sender and password:
+        rows_html = ""
+        for a in alerts:
+            sev = a.get("severity", "unknown")
+            sev_color = "#dc2626" if sev == "critical" else "#f97316"
+            sev_label = "위험" if sev == "critical" else "경고"
+            rows_html += (
+                f'<tr style="border-bottom:1px solid #f3f4f6">'
+                f'<td style="padding:8px 12px;font-size:13px">{a["indicator"]}</td>'
+                f'<td style="padding:8px 12px;font-size:13px;text-align:center">'
+                f'{a.get("value", "?")}{a.get("unit", "")}</td>'
+                f'<td style="padding:8px 12px;font-size:13px;text-align:center">'
+                f'{a.get("z_score", 0):.2f}</td>'
+                f'<td style="padding:8px 12px;font-size:13px;text-align:center;'
+                f'color:{sev_color};font-weight:700">{sev_label}</td>'
+                f'</tr>'
+            )
+
+        subject = f"⚠️ [이상치 탐지] {len(alerts)}건 — {now.strftime('%Y-%m-%d %H:%M')}"
+        html_body = f"""<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f5f7fa;font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif">
+<div style="max-width:540px;margin:28px auto;background:#fff;border-radius:12px;
+            box-shadow:0 2px 12px rgba(0,0,0,.08)">
+  <div style="background:#7f1d1d;padding:24px 28px;border-radius:12px 12px 0 0">
+    <div style="font-size:11px;color:rgba(255,255,255,.7);letter-spacing:1.5px;margin-bottom:6px">
+      ANOMALY ALERT
+    </div>
+    <div style="font-size:20px;font-weight:900;color:#fff">
+      ⚠️ 이상치 {len(alerts)}건 감지
+    </div>
+    <div style="font-size:12px;color:rgba(255,255,255,.7);margin-top:6px">
+      {now.strftime("%Y-%m-%d %H:%M")} KST
+    </div>
+  </div>
+  <div style="padding:20px 28px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0">
+          <th style="padding:8px 12px;font-size:12px;text-align:left;color:#6b7280">지표</th>
+          <th style="padding:8px 12px;font-size:12px;text-align:center;color:#6b7280">현재값</th>
+          <th style="padding:8px 12px;font-size:12px;text-align:center;color:#6b7280">Z-score</th>
+          <th style="padding:8px 12px;font-size:12px;text-align:center;color:#6b7280">심각도</th>
+        </tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+</div>
+</body>
+</html>"""
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = formataddr(("60초 경제신호", sender))
+        msg["To"] = admin_email
+
+        plain_lines = [f"이상치 탐지 {len(alerts)}건 — {now.strftime('%Y-%m-%d %H:%M')}"]
+        for a in alerts:
+            plain_lines.append(
+                f"  {a['indicator']}: {a.get('value','?')}{a.get('unit','')} "
+                f"(Z={a.get('z_score',0):.2f}, {a.get('severity','?')})"
+            )
+        msg.attach(MIMEText("\n".join(plain_lines), "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+        smtp_host = os.environ.get("EMAIL_SMTP_HOST", "smtp.gmail.com")
+        smtp_port = int(os.environ.get("EMAIL_SMTP_PORT", "587"))
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(sender, password)
+                server.sendmail(sender, [admin_email], msg.as_bytes())
+            print(f"[notifier] ✓ 이상치 이메일 발송 완료 → {admin_email}")
+            success = True
+        except Exception as e:
+            print(f"[notifier] ✗ 이상치 이메일 발송 실패: {e}")
+
+    if not webhook_url and not (admin_email and sender and password):
+        print("[notifier] 알림 채널 미설정 — 이상치 알림 건너뜀")
+
+    # 로그 기록
+    log_pipeline_result("_anomaly_alert", "success" if success else "skipped")
+
+    return success
+
+
+# ─────────────────────────────────────────────────────────────
 # CLI: python core/pipeline_notifier.py
 # ─────────────────────────────────────────────────────────────
 

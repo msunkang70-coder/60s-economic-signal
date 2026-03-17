@@ -156,9 +156,34 @@ def calculate_risk_index(macro_data: dict, industry_key: str = "일반") -> dict
         for label, info in sorted_items[:3]
     ]
 
+    # V9: 산업별 리스크 지수 label + description 생성
+    _LEVEL_LABELS = {
+        "critical": "위험",
+        "high": "경고",
+        "medium": "주의",
+        "low": "안정",
+    }
+    ind_label = profile.get("label", industry_key)
+    label_text = f"{ind_label} {_LEVEL_LABELS.get(level, '주의')}"
+
+    # description: 상위 드라이버 기반 설명 생성
+    if drivers:
+        top_driver_names = [d["label"] for d in drivers[:2] if d["risk_score"] > 0]
+        if top_driver_names and score >= 25:
+            driver_str = " · ".join(top_driver_names)
+            description = f"주요 리스크 요인: {driver_str}"
+        elif score >= 25:
+            description = "복수 지표가 주의 구간에 진입했습니다"
+        else:
+            description = "주요 거시지표가 안정적 범위 내에 있습니다"
+    else:
+        description = "거시지표 데이터 부족"
+
     result = {
         "score": score,
         "level": level,
+        "label": label_text,
+        "description": description,
         "breakdown": breakdown,
         "drivers": drivers,
         "generated_at": datetime.now().isoformat(),

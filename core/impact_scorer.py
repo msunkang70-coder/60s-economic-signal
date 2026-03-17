@@ -2,16 +2,21 @@
 core/impact_scorer.py
 기사별 산업 가중 임팩트 스코어 (1~5).
 
-산출 구조 (총 100점):
+산출 구조 (총 100점 정규화):
   A. 키워드 매칭 (0~30): keywords × 3 + critical_variables × 5
   B. 거시지표 연동 (0~30): 임계값 초과 지표 수 × macro_weights
   C. 정책 유형 (0~20): 위기대응=20, 규제=15, 구조개편=12, 지원=8, 미분류=5
   D. 시급성 (0~20): 키워드당 +4 (상한 20)
+  E. 산업연관 부스트 (0~20): _ind_score × 4 (V7 추가)
+  합산(최대 120) → 100점 스케일 정규화 → 1~5 매핑
 """
 
 import copy
+import logging
 
 from core.industry_config import get_profile
+
+_log = logging.getLogger(__name__)
 
 # ── 정책 유형 키워드 ────────────────────────────────────────
 _POLICY_KW = {
@@ -67,7 +72,13 @@ def _keyword_score(text: str, industry_key: str) -> float:
 
 
 def _macro_score(text: str, macro_data: dict | None, industry_key: str) -> float:
-    """B. 기사 내 거시지표 키워드가 언급되고 + 해당 지표가 임계값 초과일 때만 가산."""
+    """B. 기사 내 거시지표 키워드가 언급되고 + 해당 지표가 임계값 초과일 때만 가산.
+
+    Score scales proportionally to how far value exceeds threshold:
+    - At threshold boundary: base_score (3.0 * weight)
+    - Far beyond threshold: max_score (5.0 * weight)
+    - Linear interpolation between, capped at 1.0
+    """
     if not macro_data:
         return 0.0
 
@@ -95,11 +106,23 @@ def _macro_score(text: str, macro_data: dict | None, industry_key: str) -> float
         try:
             val = float(str(data.get("value", "0")).replace(",", "").replace("+", ""))
         except (ValueError, TypeError):
+            _log.debug("Failed to parse macro value for indicator '%s': %r", indicator, data.get("value"))
             continue
         lo, hi = _MACRO_THRESHOLDS.get(indicator, (None, None))
         if lo is not None and hi is not None:
             if val < lo or val > hi:
-                score += 5.0 * weight
+                # Calculate excess ratio based on which threshold exceeded
+                if val < lo:
+                    excess_ratio = (lo - val) / lo
+                else:  # val > hi
+                    excess_ratio = (val - hi) / hi
+
+                # Cap excess_ratio at 1.0 for max score
+                excess_ratio = min(1.0, excess_ratio)
+
+                # Linear interpolation: base 3.0 to max 5.0
+                indicator_score = (3.0 + 2.0 * excess_ratio) * weight
+                score += indicator_score
     return min(30.0, score)
 
 
@@ -161,7 +184,28 @@ def score_article(
     c = _policy_score(text)
     d = _urgency_score(text)
 
-    return _score_to_stars(a + b + c + d)
+    # V7: filter_relevant_docs의 _ind_score 부스트 반영 (산업 연관 기사 우선)
+    # V8: 전체 합산을 100점 만점으로 정규화 — ind_boost가 높아도 5점 편향 방지
+    ind_boost = min(20.0, article.get("_ind_score", 0) * 4.0)
+    raw = a + b + c + d + ind_boost       # 최대 120
+    normalized = min(100.0, raw * (100.0 / 120.0))  # 100점 만점 스케일
+
+    return _score_to_stars(normalized)
+
+
+def _ind_tier(ind_score: float) -> int:
+    """_ind_score를 3단계 연관도 그룹으로 매핑.
+
+    Returns:
+        0 = 직접 키워드 매칭 (ind_score >= 2, 직접키워드 ×2 이므로 최소 2)
+        1 = 확장 키워드만 매칭 (0 < ind_score < 2)
+        2 = 매칭 없음 (ind_score == 0)
+    """
+    if ind_score >= 2:
+        return 0
+    if ind_score > 0:
+        return 1
+    return 2
 
 
 def score_articles(
@@ -171,14 +215,20 @@ def score_articles(
 ) -> list[dict]:
     """기사 리스트에 'impact_score' 키를 추가하여 반환 (원본 수정 X, 복사).
 
-    점수 내림차순 정렬.
+    V8: 3단계 그룹 정렬 — ① 산업 연관도 그룹(직접>확장>무관련) ② 그룹 내 impact_score.
+    산업 직접 키워드 매칭 기사가 항상 확장/무관련 기사보다 위에 배치됩니다.
     """
     scored = []
     for art in articles:
         art_copy = copy.copy(art)
         art_copy["impact_score"] = score_article(art, industry_key, macro_data)
         scored.append(art_copy)
-    scored.sort(key=lambda x: -x["impact_score"])
+    # V8: 그룹 우선 → 그룹 내 impact 정렬
+    scored.sort(key=lambda x: (
+        _ind_tier(x.get("_ind_score", 0)),   # 0(직접) < 1(확장) < 2(무관련)
+        -x["impact_score"],                   # 그룹 내 impact 높은 순
+        -x.get("_ind_score", 0),              # 동점 시 연관도 높은 순
+    ))
     return scored
 
 
@@ -374,6 +424,7 @@ def calculate_prev_period_delta(
                 continue
             prev_val = float(str(prev_raw).replace(",", "").replace("+", ""))
         except (ValueError, TypeError):
+            _log.debug("Failed to parse prev_period_delta values for label '%s': curr=%r, prev=%r", label, item.get("value"), prev_raw)
             continue
 
         direction = _MACRO_DIRECTION.get(label, +1)

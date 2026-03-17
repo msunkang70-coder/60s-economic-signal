@@ -22,47 +22,96 @@ def _parse_value(raw) -> float | None:
         return None
 
 
-def _check_velocity(label: str, current: float, previous: float) -> dict | None:
-    """변화율 기반 충격 감지.
+# V11.1: 지표별 맞춤 임계값 + 계산 방식 (거짓 양성 방지)
+#
+# use_absolute=True  → 절대변화량(Δ) 비교  (비율·지수 지표: CPI 2.3→2.0 = -0.3pp)
+# use_absolute=False → 상대변화율(%) 비교  (레벨 지표: 환율 1350→1481 = +9.7%)
+#
+# unit: 알림 메시지에 표시할 단위 (%, %p, 원 등)
+_INDICATOR_THRESHOLDS = {
+    # 레벨 지표 — 상대% 사용
+    "환율(원/$)":     {"minor": 1.5,  "major": 3.0,  "extreme": 5.0,  "use_absolute": False, "unit": "%"},
+    "원/100엔 환율":  {"minor": 1.5,  "major": 3.0,  "extreme": 5.0,  "use_absolute": False, "unit": "%"},
+    # 비율 지표 — 절대pp 사용 (상대% 사용 시 0.3%→13% 같은 거짓 양성 발생)
+    "소비자물가(CPI)": {"minor": 0.3,  "major": 0.7,  "extreme": 1.5,  "use_absolute": True,  "unit": "%p"},
+    "기준금리":        {"minor": 0.25, "major": 0.5,  "extreme": 1.0,  "use_absolute": True,  "unit": "%p"},
+    "수출증가율":      {"minor": 4.0,  "major": 8.0,  "extreme": 15.0, "use_absolute": True,  "unit": "%p"},
+    # 지수/YoY 비율 지표 — 절대pp 사용 (YoY % 변화율 간 비교이므로 절대 pp가 정확)
+    "수출물가지수":    {"minor": 3.0,  "major": 6.0,  "extreme": 10.0, "use_absolute": True,  "unit": "%p"},
+    "수입물가지수":    {"minor": 3.0,  "major": 6.0,  "extreme": 10.0, "use_absolute": True,  "unit": "%p"},
+    "경상수지":        {"minor": 20.0, "major": 40.0, "extreme": 70.0, "use_absolute": False, "unit": "%"},
+}
+_DEFAULT_THRESHOLDS = {"minor": 2.0, "major": 5.0, "extreme": 8.0, "use_absolute": False, "unit": "%"}
 
-    |delta_pct| >= 2% → shock
-      2-5%: minor, 5-8%: major, 8%+: extreme
+# V11: 한국어 알림 메시지 (사용자 친화)
+_SHOCK_TYPE_KR = {"spike": "급등", "plunge": "급락", "reversal": "추세 반전"}
+_SEVERITY_KR = {"extreme": "심각", "major": "주의", "minor": "참고"}
+
+
+def _check_velocity(label: str, current: float, previous: float) -> dict | None:
+    """V11.1: 지표별 맞춤 임계값 + 계산방식(상대%/절대pp) + 신뢰도 + 한국어 메시지.
+
+    거짓 양성 방지:
+    - 비율 지표(CPI, 기준금리, 수출증가율): 절대변화량(pp) 비교
+      예) CPI 2.3→2.0 = -0.3pp → "급락 0.3%p" (상대% 사용 시 -13% 거짓 양성 방지)
+    - 레벨/지수 지표(환율, 물가지수): 상대변화율(%) 비교
     """
     if previous == 0:
         return None
 
     delta = current - previous
-    delta_pct = abs(delta / previous * 100)
+    thresholds = _INDICATOR_THRESHOLDS.get(label, _DEFAULT_THRESHOLDS)
+    use_absolute = thresholds.get("use_absolute", False)
+    unit = thresholds.get("unit", "%")
 
-    if delta_pct < 2.0:
+    # 비교값: 절대변화량 or 상대변화율
+    compare_val = abs(delta) if use_absolute else abs(delta / previous * 100)
+    delta_pct = abs(delta / previous * 100)  # 메시지용 (참고)
+
+    if compare_val < thresholds["minor"]:
         return None
 
-    # shock_type
     shock_type = "spike" if delta > 0 else "plunge"
 
-    # severity
-    if delta_pct >= 8.0:
+    if compare_val >= thresholds["extreme"]:
         severity = "extreme"
-    elif delta_pct >= 5.0:
+    elif compare_val >= thresholds["major"]:
         severity = "major"
     else:
         severity = "minor"
 
+    # V11: 신뢰도
+    confidence = "high" if compare_val >= thresholds["major"] else "medium"
+
+    # V11.1: 한국어 알림 메시지 — 절대지표는 pp 단위 표시
+    _type_kr = _SHOCK_TYPE_KR.get(shock_type, shock_type)
+    _sev_kr = _SEVERITY_KR.get(severity, severity)
+    if use_absolute:
+        alert_msg = f"{label} {_type_kr} {compare_val:.2f}{unit} [{_sev_kr}]"
+    else:
+        alert_msg = f"{label} {_type_kr} {compare_val:.1f}{unit} [{_sev_kr}]"
+
     return {
         "indicator": label,
         "shock_type": shock_type,
-        "magnitude": round(delta_pct, 2),
+        "magnitude": round(compare_val, 2),
+        "magnitude_pct": round(delta_pct, 2),
         "severity": severity,
-        "alert_msg": f"{label}: {shock_type} {delta_pct:.1f}% ({severity})",
+        "confidence": confidence,
+        "alert_msg": alert_msg,
         "detected_at": datetime.now().isoformat(),
+        "current_value": current,
+        "previous_value": previous,
     }
 
 
 def _check_reversal(label: str, current: float, previous: float, trend: str) -> dict | None:
-    """추세 반전 감지.
+    """V11: 추세 반전 감지 — 지표별 맞춤 임계값 + 신뢰도 + 한국어 메시지.
 
     trend가 '▲'인데 current < previous → reversal (하락 반전)
     trend가 '▼'인데 current > previous → reversal (상승 반전)
+
+    거짓 양성 방지: 반전 폭이 지표별 minor 임계값 미만이면 무시.
     """
     if previous == 0:
         return None
@@ -79,21 +128,46 @@ def _check_reversal(label: str, current: float, previous: float, trend: str) -> 
     if not reversal_detected:
         return None
 
-    # severity by magnitude
-    if delta_pct >= 5.0:
+    # V11.1: 지표별 임계값 + 계산방식
+    thresholds = _INDICATOR_THRESHOLDS.get(label, _DEFAULT_THRESHOLDS)
+    use_absolute = thresholds.get("use_absolute", False)
+    unit = thresholds.get("unit", "%")
+
+    compare_val = abs(delta) if use_absolute else delta_pct
+
+    if compare_val < thresholds["minor"]:
+        return None
+
+    # V11: severity by per-indicator thresholds
+    if compare_val >= thresholds["extreme"]:
         severity = "extreme"
-    elif delta_pct >= 3.0:
+    elif compare_val >= thresholds["major"]:
         severity = "major"
     else:
         severity = "minor"
 
+    # V11: 신뢰도
+    confidence = "high" if compare_val >= thresholds["major"] else "medium"
+
+    # V11.1: 한국어 알림 메시지 — 단위 표시
+    _sev_kr = _SEVERITY_KR.get(severity, severity)
+    _dir_kr = "하락 반전" if delta < 0 else "상승 반전"
+    if use_absolute:
+        alert_msg = f"{label} 추세 반전({_dir_kr}) {compare_val:.2f}{unit} [{_sev_kr}]"
+    else:
+        alert_msg = f"{label} 추세 반전({_dir_kr}) {compare_val:.1f}{unit} [{_sev_kr}]"
+
     return {
         "indicator": label,
         "shock_type": "reversal",
-        "magnitude": round(delta_pct, 2),
+        "magnitude": round(compare_val, 2),
+        "magnitude_pct": round(delta_pct, 2),
         "severity": severity,
-        "alert_msg": f"{label}: 추세 반전 감지 ({trend} → 실제 역방향 {delta_pct:.1f}%)",
+        "confidence": confidence,
+        "alert_msg": alert_msg,
         "detected_at": datetime.now().isoformat(),
+        "current_value": current,
+        "previous_value": previous,
     }
 
 

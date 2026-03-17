@@ -65,11 +65,9 @@ _SPEC: dict = {
         "frequency":   "월간",
     },
     "수출증가율": {
-        # ECOS 수출금액지수(2020=100) 기반 전년동월비 YoY 계산
-        # 032Y001: ECOS에 없음(INFO-200), 403Y003: 수입금액지수(수출 아님) → 모두 사용불가
-        # 403Y001/*AA가 ECOS에서 이용 가능한 최선의 수출 지표
-        # ※ 관세청 통관기준 수출증가율과 지수 산정 방식 차이로 값 상이할 수 있음
-        # ※ _yoy()는 rows[-2](최신 확정치) 기준 계산 → 1월 저기저 이상치 자동 회피
+        # 한국은행 ECOS 수출금액지수(403Y001) YoY 기준
+        # 관세청 통관기준 수출증가율과 최대 ±2~3%p 괴리 가능 (지수 산정 방식 차이)
+        # 괴리가 크면 stat_code를 "301Y017"로 교체 후 재검증 필요
         "stat_code": "403Y001",
         "item_code": "*AA",       # 총지수
         "period":    "M",
@@ -131,6 +129,33 @@ _SPEC: dict = {
         "source_url":  "https://ecos.bok.or.kr/",
         "frequency":   "월간",
     },
+    "경상수지(억달러)": {
+        # 056Y001: 국제수지(BPM6) — 경상수지
+        # item_code "10101" = 경상수지 (백만달러 단위 → 억달러 변환)
+        # 월별 절댓값 사용, YoY 아님
+        "stat_code": "056Y001",
+        "item_code": "10101",
+        "period":    "M",
+        "yoy":       False,
+        "unit":      "억달러",
+        "scale":     0.01,       # 백만달러 → 억달러 (÷100)
+        "source_name": "한국은행 ECOS",
+        "source_url":  "https://ecos.bok.or.kr/",
+        "frequency":   "월간",
+    },
+    "GDP성장률": {
+        # 111Y002: 국내총생산(지출항목별, 실질, 계절조정, 전기대비)
+        # item_code "10101" = GDP 전기비 성장률 (%)
+        # 분기별 절댓값 사용
+        "stat_code": "111Y002",
+        "item_code": "10101",
+        "period":    "Q",
+        "yoy":       False,
+        "unit":      "%",
+        "source_name": "한국은행 ECOS",
+        "source_url":  "https://ecos.bok.or.kr/",
+        "frequency":   "분기",
+    },
 }
 
 _HEADERS = {"User-Agent": "60sec-econ-signal/1.0"}
@@ -163,11 +188,20 @@ def _date_range(period: str, lookback: int = 14) -> tuple:
     """
     period='D' → 최근 lookback일 (YYYYMMDD)
     period='M' → 최근 lookback+2개월 (YYYYMM), 전년동월 대비 계산용 여유 포함
+    period='Q' → 최근 lookback 분기 (YYYYQ1~Q4)
     """
     today = datetime.today()
     if period == "D":
         start = today - timedelta(days=lookback)
         return start.strftime("%Y%m%d"), today.strftime("%Y%m%d")
+
+    if period == "Q":
+        # 분기: 최근 lookback 분기
+        cur_q = (today.month - 1) // 3 + 1
+        total_q = today.year * 4 + cur_q - lookback
+        sy = (total_q - 1) // 4
+        sq = (total_q - 1) % 4 + 1
+        return f"{sy}Q{sq}", f"{today.year}Q{cur_q}"
 
     # Monthly: lookback개월 + 2개월 여유 (14개월분 → 전년동월 포함)
     n = lookback + 2
@@ -360,10 +394,12 @@ def _fetch_monthly_yoy(api_key: str, spec: dict) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────
 def _fetch_base_rate(api_key: str, spec: dict) -> Optional[dict]:
     """
-    월별 지표 최신 절댓값 → {value, prev_value, as_of} 반환. 실패 시 None.
+    월별/분기별 지표 최신 절댓값 → {value, prev_value, as_of} 반환. 실패 시 None.
     기준금리처럼 YoY가 아닌 실제 수치를 그대로 사용하는 지표에 사용.
+    spec['scale'] 이 있으면 값에 곱한다 (예: 백만달러→억달러 시 0.01).
     """
-    rows = _fetch_rows(api_key, spec["stat_code"], spec["item_code"], "M")
+    period = spec.get("period", "M")
+    rows = _fetch_rows(api_key, spec["stat_code"], spec["item_code"], period)
     if not rows:
         return None
     rows_s = sorted(rows, key=lambda r: r["TIME"])
@@ -371,12 +407,16 @@ def _fetch_base_rate(api_key: str, spec: dict) -> Optional[dict]:
     if spec.get("dedup"):
         rows_s = _dedup_by_time(rows_s)
     try:
+        scale  = spec.get("scale", 1.0)
         latest = rows_s[-1]
         prev   = rows_s[-2] if len(rows_s) >= 2 else None
-        val    = str(float(latest["DATA_VALUE"]))
-        pval   = str(float(prev["DATA_VALUE"])) if prev else None
-        t      = latest["TIME"]   # YYYYMM
-        as_of  = f"{t[:4]}-{t[4:]}"
+        val    = str(round(float(latest["DATA_VALUE"]) * scale, 1))
+        pval   = str(round(float(prev["DATA_VALUE"]) * scale, 1)) if prev else None
+        t      = latest["TIME"]   # YYYYMM or YYYYQn
+        if "Q" in t:
+            as_of = t  # 분기: "2025Q4" 그대로
+        else:
+            as_of = f"{t[:4]}-{t[4:]}"
         return {"value": val, "prev_value": pval, "as_of": as_of}
     except Exception:
         return None
@@ -408,12 +448,59 @@ def _auto_note(label: str, value: str, prev_value: Optional[str],
             return f"전일 대비 {abs(d):.0f}원 {up}"
         if "기준금리" in label:
             return f"전월 대비 {abs(d):.2f}%p {up}" if d != 0 else "전월 대비 동결"
+        # 보합(d==0) — 환율·기준금리 외 지표
+        if d == 0:
+            return "전월 대비 동결"
         # YoY 지표 (CPI, 수출증가율 등) → "전년동월 대비"
         if yoy:
             return f"전년동월 대비 {abs(d):.1f}%p {up}"
         return f"전월 대비 {abs(d):.1f}%p {up}"
     except Exception:
         return "최신 ECOS 데이터 기준"
+
+
+# ─────────────────────────────────────────────────────────────
+# 9a. 복합 거시지표 서사 문장 생성
+# ─────────────────────────────────────────────────────────────
+def _macro_narrative(macro: dict) -> str:
+    """
+    거시지표 조합 기반 1줄 복합 해석 문장 자동 생성.
+    app.py에서 import하여 대시보드 상단에 표시한다.
+
+    Args:
+        macro: macro.json 딕셔너리 (_MACRO)
+
+    Returns:
+        str — 복합 해석 문장 1줄. 데이터 없으면 빈 문자열.
+    """
+    from core.utils import safe_float
+    fx = safe_float(macro.get("환율(원/$)", {}).get("value", 0))
+    exp = safe_float(macro.get("수출증가율", {}).get("value", 0))
+    cpi = safe_float(macro.get("소비자물가(CPI)", {}).get("value", 0))
+    rate = safe_float(macro.get("기준금리", {}).get("value", 0))
+    if fx == 0 and exp == 0 and cpi == 0 and rate == 0:
+        return ""
+
+    # 복합 조건 우선순위 순서로 판단
+    if fx >= 1500:
+        return "환율 1500원대 — 수입 원가 급등 압력, 수출 채산성은 개선되나 내수 부담 확대"
+    if fx >= 1450 and exp < 0:
+        return "고환율 속 수출 부진 — 가격 경쟁력보다 수요 둔화 영향이 우세한 국면"
+    if fx >= 1450 and exp >= 0:
+        return "원화 약세가 수출 채산성을 지지하나, 수입 물가 상승 압력도 병존"
+    if exp <= -10:
+        return "수출 급감 — 글로벌 수요 위축 또는 주요국 규제 리스크 점검 필요"
+    if exp < 0 and cpi >= 3.0:
+        return "수출 감소 + 고물가 병존 — 스태그플레이션 리스크 모니터링 필요"
+    if cpi >= 3.0 and rate < 3.0:
+        return "물가 3% 초과 — 한국은행 금리 인하 시기 지연 가능성 높음"
+    if cpi < 2.0 and rate >= 3.5:
+        return "물가 안정 + 고금리 유지 — 금리 인하 기대감이 형성되는 국면"
+    if exp >= 10 and fx < 1380:
+        return "수출 호조 + 원화 강세 — 수출 물량 확대에도 채산성 점검 필요"
+    if exp >= 5:
+        return "수출 회복세 — 반도체 중심 수출 증가, 대외 불확실성은 잔존"
+    return "거시지표는 완만한 회복 흐름을 시사하나 불확실성은 잔존"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -538,6 +625,14 @@ def refresh_macro(api_key: Optional[str] = None) -> dict:
     # ── macro.json 원자적 저장 ────────────────────────────────
     _write_macro_atomic(updated)
     print(f"[ECOS] macro.json 갱신 완료 → {MACRO_PATH}")
+
+    # ── Phase 13: 갱신 완료 훅 (이상치 탐지) ──────────────────
+    try:
+        from core.auto_pipeline import on_refresh_complete
+        on_refresh_complete(updated)
+    except Exception:
+        pass
+
     return updated
 
 

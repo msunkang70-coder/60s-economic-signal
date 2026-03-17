@@ -10,6 +10,8 @@ Item 10-11 of the dashboard intelligence spec.
 
 from __future__ import annotations
 
+from core.utils import safe_execute
+
 # ── 규칙 기반 인사이트 템플릿 ─────────────────────────────────────
 # Key: (지표명_키워드, direction)  → 1문장 Korean insight
 # {industry} placeholder는 산업 한국어명으로 대체됨
@@ -109,6 +111,7 @@ def _groq_insight(
     return None
 
 
+@safe_execute(default="", log_prefix="ai_insight")
 def generate_ai_insight(
     label: str,
     trend: str,

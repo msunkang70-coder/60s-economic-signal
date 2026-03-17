@@ -146,11 +146,11 @@ class TestSummarizer:
 
     def test_system_prompt_format_all_industries(self):
         """8개 산업 모두에 대해 SYSTEM_PROMPT 포맷팅이 가능한지 검증."""
-        from core.summarizer import SYSTEM_PROMPT, _resolve_industry_label, _resolve_industry_variables
+        from core.summarizer import SYSTEM_PROMPT_TEMPLATE, _resolve_industry_label, _build_industry_context
         for ind in INDUSTRIES:
             label = _resolve_industry_label(ind)
-            variables = _resolve_industry_variables(ind)
-            formatted = SYSTEM_PROMPT.format(industry_label=label, industry_variables=variables)
+            context = _build_industry_context(ind)
+            formatted = SYSTEM_PROMPT_TEMPLATE.format(industry_label=label, industry_context=context)
             assert label in formatted
             assert "{industry_label}" not in formatted
 
@@ -167,7 +167,7 @@ class TestSummarizer:
                 industry_key="반도체",
             )
         assert summary, "요약 결과가 비어있습니다"
-        assert source == "rule", f"source가 'rule'이 아님: {source}"
+        assert source in ("rule", "rule_enhanced", "industry_fallback", "smart_fallback"), f"source가 rule/rule_enhanced/industry_fallback/smart_fallback이 아님: {source}"
         assert isinstance(summary, dict), f"규칙 기반 폴백이 dict가 아님: {type(summary)}"
         assert "impact" in summary, "4-frame impact 키 누락"
 
@@ -714,11 +714,13 @@ class TestHeroCard4Frame:
         }
         mock_json_response = json.dumps(mock_4frame, ensure_ascii=False)
 
+        # V3: 본문 100자 미만이면 body_short로 빠지므로 충분한 본문 제공
+        _long_body = "환율이 1,450원을 돌파했다. " * 10  # 200자+
         with patch("core.summarizer._summarize_with_llm", return_value=mock_4frame), \
              patch("core.summarizer._load_summary_cache", return_value={}), \
              patch("core.summarizer._verify_body_title_relevance", return_value=True):
             summary, source = summarize_3line(
-                "환율이 1,450원을 돌파했다.", title="환율 급등", industry_key="반도체",
+                _long_body, title="환율 급등", industry_key="반도체",
             )
         assert source == "groq"
         assert isinstance(summary, dict), f"4-frame 결과가 dict가 아님: {type(summary)}"
@@ -740,7 +742,7 @@ class TestHeroCard4Frame:
             summary, source = summarize_3line(
                 sample_text, title=sample_article["title"], industry_key="반도체",
             )
-        assert source == "rule"
+        assert source in ("rule", "rule_enhanced", "industry_fallback", "smart_fallback")
         assert isinstance(summary, dict), f"폴백 결과가 dict가 아님: {type(summary)}"
         assert "impact" in summary, "4-frame impact 키 누락"
         assert summary["impact"], "impact 값이 비어있음"

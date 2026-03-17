@@ -72,6 +72,74 @@ def get_items() -> list[dict]:
     return _load_wl().get("items", [])
 
 
+# V9: 산업별 기본 워치리스트 항목
+_INDUSTRY_DEFAULT_WATCHLIST: dict[str, list[dict]] = {
+    "반도체": [
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": True},
+        {"indicator": "수출증가율", "condition": "below", "threshold": -5, "notify_email": True},
+        {"indicator": "수입물가지수", "condition": "above", "threshold": 5, "notify_email": False},
+    ],
+    "자동차": [
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": True},
+        {"indicator": "환율(원/$)", "condition": "below", "threshold": 1250, "notify_email": True},
+        {"indicator": "수입물가지수", "condition": "above", "threshold": 5, "notify_email": False},
+    ],
+    "화학": [
+        {"indicator": "수입물가지수", "condition": "above", "threshold": 5, "notify_email": True},
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": False},
+        {"indicator": "소비자물가(CPI)", "condition": "above", "threshold": 3.5, "notify_email": False},
+    ],
+    "소비재": [
+        {"indicator": "소비자물가(CPI)", "condition": "above", "threshold": 3.0, "notify_email": True},
+        {"indicator": "기준금리", "condition": "above", "threshold": 3.75, "notify_email": True},
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": False},
+    ],
+    "배터리": [
+        {"indicator": "수출증가율", "condition": "below", "threshold": -5, "notify_email": True},
+        {"indicator": "수입물가지수", "condition": "above", "threshold": 5, "notify_email": True},
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": False},
+    ],
+    "조선": [
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": True},
+        {"indicator": "환율(원/$)", "condition": "below", "threshold": 1250, "notify_email": True},
+        {"indicator": "기준금리", "condition": "above", "threshold": 3.75, "notify_email": False},
+    ],
+    "철강": [
+        {"indicator": "수입물가지수", "condition": "above", "threshold": 5, "notify_email": True},
+        {"indicator": "수출증가율", "condition": "below", "threshold": -5, "notify_email": True},
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": False},
+    ],
+    "일반": [
+        {"indicator": "환율(원/$)", "condition": "above", "threshold": 1450, "notify_email": True},
+        {"indicator": "수출증가율", "condition": "below", "threshold": -5, "notify_email": True},
+        {"indicator": "소비자물가(CPI)", "condition": "above", "threshold": 3.5, "notify_email": False},
+    ],
+}
+
+
+def initialize_default_watchlist(industry_key: str) -> int:
+    """산업별 기본 워치리스트를 초기화한다. 이미 항목이 있으면 건너뜀.
+
+    Returns: 추가된 항목 수
+    """
+    wl = _load_wl()
+    if wl.get("items"):
+        return 0  # 이미 항목 존재
+
+    defaults = _INDUSTRY_DEFAULT_WATCHLIST.get(industry_key, _INDUSTRY_DEFAULT_WATCHLIST["일반"])
+    added = 0
+    for d in defaults:
+        add_item(
+            indicator=d["indicator"],
+            condition=d["condition"],
+            threshold=d["threshold"],
+            industry_keys=[industry_key, "일반"],
+            notify_email=d["notify_email"],
+        )
+        added += 1
+    return added
+
+
 def add_item(
     indicator: str,
     condition: str,
@@ -136,15 +204,22 @@ def _parse_value(raw) -> Optional[float]:
         return None
 
 
-def check_watchlist(macro_data: dict) -> list[dict]:
+def check_watchlist(
+    macro_data: dict,
+    alert_channels_config: dict = None,
+) -> list[dict]:
     """
     워치리스트의 모든 항목을 macro_data와 대조하여
     임계값을 초과한 항목 목록을 반환한다.
 
     중복 알림 방지: last_triggered가 24시간 이내이면 건너뜀.
 
+    alert_channels_config가 제공되면 route_alert()를 호출하여
+    Slack·카카오 등 다중 채널로 알림을 발송한다.
+
     Args:
         macro_data: {label: {value, unit, trend, prev_value, ...}} 형식
+        alert_channels_config: 다중 채널 설정 (None이면 이메일만 기존 방식)
 
     Returns:
         [{"id", "indicator", "condition", "threshold", "current_value",
@@ -186,9 +261,13 @@ def check_watchlist(macro_data: dict) -> list[dict]:
             hit = True
         elif condition == "change_pct":
             prev = _parse_value(data.get("prev_value"))
-            if prev and prev != 0:
-                change_pct = abs((current - prev) / prev * 100)
-                if change_pct >= threshold:
+            if prev is not None:
+                if prev != 0:
+                    change_pct = abs((current - prev) / prev * 100)
+                    if change_pct >= threshold:
+                        hit = True
+                elif current != 0:
+                    # 기저값 0 → 0이 아닌 값으로 변동 시 100% 변화 간주
                     hit = True
 
         if hit:
@@ -209,6 +288,14 @@ def check_watchlist(macro_data: dict) -> list[dict]:
 
     if updated:
         _save_wl(wl)
+
+    # 다중 채널 알림 라우팅 (alert_channels_config 제공 시)
+    if triggered and alert_channels_config is not None:
+        try:
+            from core.alert_channels import route_alert
+            route_alert(triggered, alert_channels_config)
+        except Exception as _route_err:
+            print(f"[watchlist] 다중 채널 라우팅 오류: {_route_err}")
 
     return triggered
 

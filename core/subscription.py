@@ -151,3 +151,82 @@ def get_industry_send_list() -> dict[str, list[str]]:
         if email:
             result.setdefault(ind, []).append(email)
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# 플랜별 기능 제한 (Phase 11 B-1)
+# ─────────────────────────────────────────────────────────────
+
+PLAN_FEATURE_LIMITS = {
+    "free": {
+        "pdf_reports_per_month": 3,
+        "signal_accuracy_days": 7,
+        "industry_count": 1,
+        "morning_brief": False,
+        "custom_metrics": False,
+        "slack_alert": False,
+        "scenario_analysis": False,
+        "kakao_alert": False,
+    },
+    "basic": {
+        "pdf_reports_per_month": 10,
+        "signal_accuracy_days": 30,
+        "industry_count": 2,
+        "morning_brief": True,
+        "custom_metrics": True,
+        "slack_alert": False,
+        "scenario_analysis": True,
+        "kakao_alert": False,
+    },
+    "pro": {
+        "pdf_reports_per_month": -1,
+        "signal_accuracy_days": -1,
+        "industry_count": -1,
+        "morning_brief": True,
+        "custom_metrics": True,
+        "slack_alert": True,
+        "scenario_analysis": True,
+        "kakao_alert": True,
+    },
+}
+
+
+def get_user_plan(email: str) -> str:
+    """이메일로 구독자의 플랜을 조회한다. 미등록/비활성 시 'free'."""
+    db = _load_db()
+    for s in db.get("subscribers", []):
+        if s.get("email") == email and s.get("active", False):
+            return s.get("plan", "free")
+    return "free"
+
+
+def is_feature_allowed(email: str, feature: str) -> bool:
+    """해당 이메일의 플랜에서 feature 사용이 허용되는지 확인한다."""
+    plan = get_user_plan(email)
+    limits = PLAN_FEATURE_LIMITS.get(plan, PLAN_FEATURE_LIMITS["free"])
+    value = limits.get(feature)
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return value != 0
+
+
+def get_feature_limit(email: str, feature: str) -> int | bool:
+    """해당 이메일의 플랜에서 feature 한도를 반환한다. -1은 무제한."""
+    plan = get_user_plan(email)
+    limits = PLAN_FEATURE_LIMITS.get(plan, PLAN_FEATURE_LIMITS["free"])
+    return limits.get(feature)
+
+
+def update_user_plan(email: str, new_plan: str) -> bool:
+    """구독자의 플랜을 변경한다."""
+    if new_plan not in PLAN_FEATURE_LIMITS:
+        return False
+    db = _load_db()
+    for s in db.get("subscribers", []):
+        if s.get("email") == email:
+            s["plan"] = new_plan
+            _save_db(db)
+            return True
+    return False

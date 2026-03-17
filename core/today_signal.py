@@ -5,57 +5,23 @@ core/today_signal.py
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
+
+_log = logging.getLogger(__name__)
+
+# Fix C: N/A 파싱 실패 warn-once — 세션당 지표별 1회만 경고
+# (generate_today_signal이 렌더링당 4+ 회 호출되어 로그 폭주 방지)
+_na_warned_labels: set[str] = set()
 
 from core.industry_config import get_profile
 from core.checklist_rules import MACRO_CHECKLIST_MAP as _CHECKLIST_MAP
 from core.utils import safe_execute
+from core.constants import thresholds_simple, STATUS_SCORE
 
-# ── 간소화 임계값 (app.py _THRESHOLDS 참조) ──────────────────
-_THRESHOLDS = {
-    "환율(원/$)": [
-        (0,    1380, "normal"),
-        (1380, 1450, "caution"),
-        (1450, 1500, "warning"),
-        (1500, 9999, "danger"),
-    ],
-    "소비자물가(CPI)": [
-        (0,   2.0, "normal"),
-        (2.0, 3.0, "caution"),
-        (3.0, 9999, "danger"),
-    ],
-    "수출증가율": [
-        (-9999, -10, "danger"),
-        (-10,     0, "caution"),
-        (0,      15, "normal"),
-        (15,   9999, "caution"),
-    ],
-    "기준금리": [
-        (0,   2.0, "caution"),
-        (2.0, 3.5, "normal"),
-        (3.5, 9999, "warning"),
-    ],
-    "원/100엔 환율": [
-        (0,    800, "danger"),
-        (800,  900, "caution"),
-        (900, 1100, "normal"),
-        (1100, 9999, "caution"),
-    ],
-    "수출물가지수": [
-        (-9999, -5, "danger"),
-        (-5,     0, "caution"),
-        (0,      5, "normal"),
-        (5,   9999, "caution"),
-    ],
-    "수입물가지수": [
-        (-9999, -5, "caution"),
-        (-5,     0, "normal"),
-        (0,      5, "caution"),
-        (5,   9999, "danger"),
-    ],
-}
-
-_STATUS_SCORE = {"danger": 3, "warning": 2, "caution": 1, "normal": 0}
+# ── 임계값: core/constants.py 단일 소스에서 로드 ──────────────────
+_THRESHOLDS = thresholds_simple()
+_STATUS_SCORE = STATUS_SCORE
 
 # ── 산업별 영향 해석 ─────────────────────────────────────────
 _IMPACT_MAP = {
@@ -210,14 +176,35 @@ _IMPACT_DETAIL_MAP = {
 }
 
 
-def _get_impact_detail(category: str, high_or_low: str) -> dict:
-    """Impact/Risk/Opportunity 3분류 반환."""
+def _get_impact_detail(category: str, high_or_low: str, industry_key: str = "일반") -> dict:
+    """Impact/Risk/Opportunity 3분류 반환 — V5: 산업별 분화 적용."""
     cat_map = _IMPACT_DETAIL_MAP.get(category, _IMPACT_DETAIL_MAP["환율"])
-    return cat_map.get(high_or_low, cat_map.get("high", {
+    base = cat_map.get(high_or_low, cat_map.get("high", {
         "impact": "해당 지표 변동에 따른 직접 영향 점검 필요",
         "risk": "관련 리스크 요인 모니터링 필요",
         "opportunity": "변동 상황에서 활용 가능한 기회 탐색 필요",
     }))
+
+    # V5: 산업별 interpretation_frames로 Impact/Risk/Opp 차별화
+    if industry_key and industry_key != "일반":
+        try:
+            from core.industry_config import get_profile
+            profile = get_profile(industry_key)
+            label = profile.get("label", industry_key)
+            frames = profile.get("interpretation_frames", {})
+            if frames:
+                _impact_frame = frames.get("impact", "")
+                _risk_frame = frames.get("risk", "")
+                _opp_frame = frames.get("opportunity", "")
+                return {
+                    "impact": f"{base['impact']}. <strong>{label}</strong>: {_impact_frame}" if _impact_frame else base["impact"],
+                    "risk": f"{base['risk']}. <strong>{label}</strong>: {_risk_frame}" if _risk_frame else base["risk"],
+                    "opportunity": f"{base['opportunity']}. <strong>{label}</strong>: {_opp_frame}" if _opp_frame else base["opportunity"],
+                }
+        except Exception as e:
+            _log.warning("Profile interpretation_frames extraction failed for industry_key '%s': %s", industry_key, e)
+
+    return base
 
 
 def _classify_indicator_type(label: str, value: float) -> str:
@@ -312,6 +299,7 @@ def _detect_composite_signals(macro_data: dict) -> list[dict]:
             trend = data.get("trend", "→")
             parsed[label] = (val, trend)
         except (ValueError, TypeError):
+            _log.debug("Failed to parse macro data for label '%s': %r", label, data.get("value"))
             continue
 
     detected: list[dict] = []
@@ -365,7 +353,7 @@ def _calculate_confidence(data: dict, macro_data: dict) -> float:
             else:
                 base_confidence = 0.4
         except (ValueError, TypeError):
-            pass
+            _log.debug("Failed to parse as_of date or calculate confidence: %r", data.get("as_of") if isinstance(data, dict) else data)
 
     # 2) 보강 신호 (같은 방향 추세 지표 수)
     if macro_data:
@@ -398,6 +386,7 @@ def generate_today_signal(macro_data: dict, industry_key: str, company_profile: 
 
     profile = get_profile(industry_key)
     weights = profile.get("macro_weights", {})
+    primary_indicators = profile.get("primary_indicators", [])
 
     scored: list[tuple[float, str, dict]] = []
 
@@ -410,9 +399,21 @@ def generate_today_signal(macro_data: dict, industry_key: str, company_profile: 
         weight = weights.get(label, 1.0)
         trend = data.get("trend", "→")
 
+        raw_val = data.get("value")
+        if raw_val is None:
+            continue
+        # V16 Fix P1-3: N/A 값 사전 필터 — float 변환 전 스킵 (warning → info)
+        _raw_str = str(raw_val).strip()
+        if _raw_str in ("N/A", "n/a", "", "None", "-", "null", "NaN", "nan"):
+            _log.info("지표 '%s' 데이터 없음 (%r) — 스킵", label, raw_val)
+            continue
         try:
-            val = float(str(data.get("value", "0")).replace(",", "").replace("+", ""))
+            val = float(_raw_str.replace(",", "").replace("+", ""))
         except (ValueError, TypeError):
+            # Fix C: warn-once per label — 동일 지표 반복 경고 억제
+            if label not in _na_warned_labels:
+                _na_warned_labels.add(label)
+                _log.warning("지표 '%s' 값 파싱 실패 (이후 동일 지표 경고 생략): %r", label, raw_val)
             continue
 
         # 변화 속도(delta) 기반 추가 점수
@@ -437,7 +438,15 @@ def generate_today_signal(macro_data: dict, industry_key: str, company_profile: 
         threshold_score = _STATUS_SCORE.get(status, 0)
 
         # 곱셈형 스코어: 변화 방향 × 산업 가중치 × 임계값 점수 × 변화속도 부스트
-        total = change_score * weight * max(threshold_score, 0.5) * change_boost
+        # V8: 상한 10.0 적용 — 단일 지표가 과도하게 1위 고정되는 것 방지
+        total = min(10.0, change_score * weight * max(threshold_score, 0.5) * change_boost)
+
+        # V9: 산업별 핵심 지표(primary_indicators) 우선 부스트
+        # 해당 산업의 핵심 지표가 변동 중(▲/▼)이면 1.6배, 안정(→)이면 1.3배 부스트
+        if primary_indicators and label in primary_indicators:
+            primary_boost = 1.6 if trend in ("▲", "▼") else 1.3
+            total = min(10.0, total * primary_boost)
+
         scored.append((total, label, data))
 
     # Company Profile 기반 지표 가중치 보정
@@ -482,7 +491,36 @@ def generate_today_signal(macro_data: dict, industry_key: str, company_profile: 
         return None
 
     scored.sort(key=lambda x: -x[0])
-    _, best_label, best_data = scored[0]
+
+    # V9: 산업별 핵심 지표 우선 선택 (two-tier selection)
+    # 핵심 지표 중 '유의미한 신호'(trending 또는 비정상 status)가 있으면 그 지표를 선택
+    # 단, 비핵심 지표가 danger이면서 핵심 지표가 전혀 변동이 없으면 비핵심 허용
+    if primary_indicators:
+        primary_scored = [
+            (s, lbl, d) for s, lbl, d in scored if lbl in primary_indicators
+        ]
+        # 핵심 지표 중 유의미한 신호가 있는지 확인
+        primary_with_signal = [
+            (s, lbl, d) for s, lbl, d in primary_scored
+            if d.get("trend", "→") in ("▲", "▼")
+            or _get_status(lbl, float(str(d.get("value", "0")).replace(",", "").replace("+", ""))) != "normal"
+        ]
+        if primary_with_signal:
+            # 핵심 지표 중 최고 점수 vs 전체 최고 점수 비교
+            # 전체 1위가 danger이면서 핵심 1위 점수의 2.5배 이상일 때만 전체 1위 채택
+            top_overall = scored[0][0]
+            top_primary = primary_with_signal[0]  # 이미 정렬됨
+            if top_overall > top_primary[0] * 2.5:
+                # 비핵심 지표가 압도적으로 높을 때는 비핵심 채택 (실질적 위기 상황)
+                _, best_label, best_data = scored[0]
+            else:
+                # 핵심 지표 우선 채택
+                _, best_label, best_data = top_primary
+        else:
+            # 핵심 지표에 유의미한 신호가 없으면 전체 기준
+            _, best_label, best_data = scored[0]
+    else:
+        _, best_label, best_data = scored[0]
 
     val_str = str(best_data.get("value", ""))
     trend = best_data.get("trend", "→")
@@ -516,7 +554,7 @@ def generate_today_signal(macro_data: dict, industry_key: str, company_profile: 
         high_or_low = "high" if status in ("warning", "danger", "caution") else "low"
 
     impact = _get_impact(category, high_or_low, industry_key)
-    impact_detail = _get_impact_detail(category, high_or_low)
+    impact_detail = _get_impact_detail(category, high_or_low, industry_key)
 
     # indicator_type 분류
     indicator_type = _classify_indicator_type(best_label, val_f)

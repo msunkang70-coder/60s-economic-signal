@@ -8,6 +8,8 @@ core/scenario_engine.py
 
 import copy
 
+from core.utils import safe_execute
+
 from core.impact_scorer import calculate_macro_impact_score
 from core.industry_config import get_profile
 
@@ -39,6 +41,7 @@ _ACTION_TEMPLATES: dict[str, list[str]] = {
 }
 
 
+@safe_execute(default={}, log_prefix="scenario")
 def simulate_scenario(
     base_macro: dict,
     scenario_key: str,

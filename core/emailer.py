@@ -141,10 +141,57 @@ def _load_config() -> dict:
     return cfg
 
 
+def validate_config(cfg: dict | None = None) -> tuple[bool, list[str]]:
+    """이메일 설정 유효성 검증. (ok, errors) 반환.
+
+    검증 항목:
+      - sender: 이메일 형식 확인
+      - password: 최소 길이 (Gmail 앱 비밀번호 = 16자)
+      - recipients: 이메일 형식 확인 (쉼표 구분)
+      - smtp_port: 유효한 포트 번호
+    """
+    import re
+    if cfg is None:
+        cfg = _load_config()
+    errors: list[str] = []
+    _email_re = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+
+    # sender
+    sender = cfg.get("sender", "")
+    if not sender:
+        errors.append("EMAIL_SENDER 미설정")
+    elif not _email_re.match(sender):
+        errors.append(f"EMAIL_SENDER 형식 오류: {sender}")
+
+    # password
+    pwd = cfg.get("password", "")
+    if not pwd:
+        errors.append("EMAIL_PASSWORD 미설정")
+    elif len(pwd) < 8:
+        errors.append(f"EMAIL_PASSWORD 길이 부족 ({len(pwd)}자) — Gmail 앱 비밀번호는 16자")
+
+    # recipients
+    recip = cfg.get("recipients", "")
+    if not recip:
+        errors.append("EMAIL_RECIPIENTS 미설정")
+    else:
+        for addr in recip.split(","):
+            addr = addr.strip()
+            if addr and not _email_re.match(addr):
+                errors.append(f"수신자 이메일 형식 오류: {addr}")
+
+    # smtp_port
+    port = cfg.get("smtp_port", 587)
+    if not isinstance(port, int) or port < 1 or port > 65535:
+        errors.append(f"SMTP 포트 범위 오류: {port}")
+
+    return len(errors) == 0, errors
+
+
 def is_configured() -> bool:
     """이메일 발송에 필요한 최소 설정이 돼 있으면 True."""
-    cfg = _load_config()
-    return bool(cfg["sender"] and cfg["password"] and cfg["recipients"])
+    ok, _ = validate_config()
+    return ok
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,7 +215,8 @@ def _load_macro() -> dict:
 
 
 def _build_html(script_text: str, macro: dict, issue_month: str,
-                 industry_label: str = "", industry_desc: str = "") -> str:
+                 industry_label: str = "", industry_desc: str = "",
+                 decision_options: list | None = None) -> str:
     """60초 스크립트 + 거시지표를 담은 HTML 이메일 본문을 생성한다."""
 
     # 거시지표 카드 HTML
@@ -411,6 +459,39 @@ def _build_html(script_text: str, macro: dict, issue_month: str,
     </a>
   </div>'''}
 
+  {"" if not decision_options else '''
+  <!-- 맞춤 전략 섹션 -->
+  <div style="padding:20px 32px;border-top:1px solid #e2e8f0">
+    <div style="padding:16px; background:#f0f7ff;
+                border-left:4px solid #2E75B6; border-radius:4px;">
+      <h3 style="margin:0 0 12px 0; color:#1F3864; font-size:15px;">
+        ⚡ 오늘의 추천 대응 전략
+      </h3>
+''' + "".join(f'''
+      <div style="margin-bottom:10px; padding:10px; background:#fff;
+                  border-radius:4px; border:1px solid #dce6f1;">
+        <div style="font-weight:bold; color:#1F3864; font-size:13px;">
+          {i}. {opt.get('title', '')}
+        </div>
+        <div style="color:#595959; font-size:12px; margin-top:4px;">
+          {opt.get('rationale', '')}
+        </div>
+        <div style="margin-top:6px;">
+          <span style="background:{"#C00000" if opt.get("urgency") == "즉시" else "#ED7D31"}; color:#fff; font-size:10px;
+                       padding:2px 6px; border-radius:3px;">
+            {opt.get('urgency', '')}
+          </span>
+          <span style="background:#E8F5E9; color:#375623; font-size:10px;
+                       padding:2px 6px; border-radius:3px; margin-left:4px;">
+            난이도: {opt.get('difficulty', '')}
+          </span>
+        </div>
+      </div>
+''' for i, opt in enumerate(decision_options[:3], 1)) + '''
+    </div>
+  </div>
+'''}
+
   <!-- 푸터 -->
   <div style="background:#f8fafc;padding:18px 32px;
               border-top:1px solid #e2e8f0;font-size:11px;color:#a0aec0">
@@ -506,6 +587,20 @@ def send_script_email(
     ind_label = ind_profile.get("label", "")
     ind_desc  = ind_profile.get("description", "")
 
+    # Company Profile 기반 맞춤 전략 생성
+    _decision_opts = None
+    try:
+        from core.today_signal import generate_today_signal
+        from core.decision_engine import generate_decision_options
+        _macro_data = _load_macro()
+        _ind_key, _ = _load_industry()
+        _today_sig = generate_today_signal(_macro_data, _ind_key)
+        if _today_sig:
+            _decision_opts = generate_decision_options(_macro_data, _ind_key, _today_sig)
+    except Exception as _e:
+        print(f"[emailer] 전략 생성 건너뜀: {_e}")
+        _decision_opts = None
+
     # ── 이메일 조립 ─────────────────────────────────────────
     recipients = [r.strip() for r in cfg["recipients"].split(",") if r.strip()]
     _ind_tag   = f"[{ind_label}] " if ind_label and ind_key != "일반" else ""
@@ -520,7 +615,8 @@ def send_script_email(
                                industry_label=ind_label if ind_key != "일반" else "")
     html_body  = _build_html(script_text, macro, issue_month,
                               industry_label=ind_label if ind_key != "일반" else "",
-                              industry_desc=ind_desc if ind_key != "일반" else "")
+                              industry_desc=ind_desc if ind_key != "일반" else "",
+                              decision_options=_decision_opts)
 
     msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body,  "html",  "utf-8"))
@@ -1030,6 +1126,115 @@ def send_to_subscribers(industry: Optional[str] = None) -> dict:
 
     print(f"[subscriber] 발송 결과: sent={result['sent']}, failed={result['failed']}, skipped={result['skipped']}")
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. rapid_change 즉시 알림 발송
+# ─────────────────────────────────────────────────────────────
+
+def send_rapid_change_alert(
+    signal: dict,
+    company_profile: dict,
+    recipient: str,
+) -> bool:
+    """
+    rapid_change 감지 시 즉시 알림 이메일 발송.
+
+    Args:
+        signal:          generate_today_signal() 반환 dict
+        company_profile: 사용자 기업 프로파일 dict
+        recipient:       수신자 이메일 주소
+
+    Returns:
+        True  — 발송 성공
+        False — 설정 없음 | 발송 실패
+    """
+    if not is_configured():
+        return False
+
+    if not recipient or "@" not in recipient:
+        return False
+
+    industry     = company_profile.get("industry", "")
+    segment      = company_profile.get("segment", "전체")
+    main_market  = company_profile.get("main_market", [])
+    label        = signal.get("label", "주요 지표")
+    change_alert = signal.get("change_alert", "")
+    value        = signal.get("value", "—")
+    trend        = signal.get("trend", "")
+    delta_pct    = signal.get("delta_pct", 0)
+
+    market_str   = " / ".join(main_market) if main_market else "—"
+    seg_str      = f" / {segment}" if segment and segment != "전체" else ""
+    delta_str    = f"{delta_pct:+.1f}%" if delta_pct else ""
+
+    subject = f"⚡ [급변 알림] {label} {change_alert or delta_str}"
+
+    sent_at = datetime.now().strftime("%Y-%m-%d %H:%M KST")
+
+    html_body = f"""
+<!DOCTYPE html>
+<html lang="ko">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;font-family:'Apple SD Gothic Neo',sans-serif;background:#f8f9fa;">
+<div style="max-width:560px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;
+            box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+  <!-- 헤더 -->
+  <div style="background:#dc2626;padding:20px 28px;">
+    <h2 style="margin:0;color:#fff;font-size:20px;">⚡ 경제 급변 알림</h2>
+    <p  style="margin:4px 0 0;color:#fecaca;font-size:13px;">{sent_at}</p>
+  </div>
+  <!-- 신호 정보 -->
+  <div style="padding:24px 28px;border-bottom:1px solid #f3f4f6;">
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="color:#6b7280;font-size:13px;padding:6px 0;width:90px;">지표</td>
+        <td style="font-weight:600;font-size:15px;">{label}</td>
+      </tr>
+      <tr>
+        <td style="color:#6b7280;font-size:13px;padding:6px 0;">변화</td>
+        <td style="color:#dc2626;font-weight:700;font-size:16px;">{change_alert or delta_str}</td>
+      </tr>
+      <tr>
+        <td style="color:#6b7280;font-size:13px;padding:6px 0;">현재값</td>
+        <td style="font-size:14px;">{trend} {value}</td>
+      </tr>
+    </table>
+  </div>
+  <!-- 기업 컨텍스트 -->
+  <div style="padding:20px 28px;background:#fef9f0;border-bottom:1px solid #f3f4f6;">
+    <p style="margin:0 0 8px;font-size:13px;color:#92400e;font-weight:600;">📌 귀사 컨텍스트</p>
+    <p style="margin:0;font-size:13px;color:#555;">
+      산업: <strong>{industry}{seg_str}</strong> &nbsp;|&nbsp;
+      주요 시장: <strong>{market_str}</strong>
+    </p>
+  </div>
+  <!-- 푸터 -->
+  <div style="padding:16px 28px;background:#f9fafb;">
+    <p style="margin:0;font-size:11px;color:#9ca3af;">
+      60초 경제신호 자동 알림 &middot; 본 메일은 rapid_change 감지 시 1일 1회 발송됩니다.
+    </p>
+  </div>
+</div>
+</body>
+</html>"""
+
+    try:
+        cfg = _load_config()
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = formataddr(("60초 경제신호 알림", cfg["sender"]))
+        msg["To"]      = recipient
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(cfg["sender"], cfg["password"])
+            server.send_message(msg)
+        print(f"[rapid_alert] 발송 완료 → {recipient}")
+        return True
+    except Exception as e:
+        print(f"[rapid_alert] 발송 실패: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────

@@ -4,10 +4,10 @@
     "source_name": "한국은행 ECOS",
     "source_url": "https://ecos.bok.or.kr/",
     "frequency": "일간",
-    "note": "전일 대비 8원 상승",
-    "value": "1476",
-    "prev_value": "1468",
-    "as_of": "2026-03-06",
+    "note": "전일 대비 13원 상승",
+    "value": "1494",
+    "prev_value": "1481",
+    "as_of": "2026-03-13",
     "trend": "▲"
   },
   "소비자물가(CPI)": {
@@ -49,8 +49,8 @@
     "source_url": "https://ecos.bok.or.kr/",
     "frequency": "월간",
     "note": "전월 대비 19.5원 하락",
-    "value": "913.38",
-    "prev_value": "932.89",
+    "value": "913.4",
+    "prev_value": "932.9",
     "as_of": "2026-02",
     "trend": "▼"
   },
@@ -76,8 +76,30 @@
     "as_of": "2025-12",
     "trend": "▲"
   },
+  "경상수지(억달러)": {
+    "unit": "억달러",
+    "source_name": "한국은행 ECOS",
+    "source_url": "https://ecos.bok.or.kr/",
+    "frequency": "월간",
+    "note": "",
+    "value": "N/A",
+    "prev_value": "",
+    "as_of": "",
+    "trend": "→"
+  },
+  "GDP성장률": {
+    "unit": "%",
+    "source_name": "한국은행 ECOS",
+    "source_url": "https://ecos.bok.or.kr/",
+    "frequency": "분기",
+    "note": "",
+    "value": "N/A",
+    "prev_value": "",
+    "as_of": "",
+    "trend": "→"
+  },
   "_meta": {
-    "refreshed_at": "2026-03-09T12:46:05.715187",
+    "refreshed_at": "2026-03-16T12:52:03.368236",
     "api_version": "ECOS StatisticSearch v1"
   }
 }
