@@ -3735,6 +3735,83 @@ def render_ui() -> None:
             elif _sub_submit and not _sub_email:
                 st.warning("이메일을 입력해 주세요.")
 
+        # ── 🔧 Debug Mode (QA Panel) ─────────────────────
+        st.divider()
+        _debug_mode = st.toggle("🔧 Debug Mode", key="debug_mode_toggle")
+        if _debug_mode:
+            st.markdown("### 🩺 System Health")
+            try:
+                from daily_live_qa import load_latest_qa_report, run_daily_qa, _health_emoji
+
+                _qa_report = load_latest_qa_report()
+
+                # QA 실행 버튼
+                if st.button("▶ QA 실행", key="btn_run_qa", use_container_width=True):
+                    with st.spinner("QA 파이프라인 실행 중..."):
+                        _qa_report = run_daily_qa(verbose=False)
+                    st.rerun()
+
+                if _qa_report is None:
+                    st.info("QA 리포트 없음 — 위 버튼으로 실행하세요.")
+                else:
+                    _health = _qa_report.get("overall_health", "Unknown")
+                    _emoji = _qa_report.get("health_emoji", _health_emoji(_health))
+                    _run_at = _qa_report.get("run_at", "—")
+                    _summary = _qa_report.get("summary", {})
+
+                    # Health Badge
+                    _health_colors = {
+                        "Green": ("#16a34a", "#f0fdf4"),
+                        "Yellow": ("#ca8a04", "#fefce8"),
+                        "Red": ("#dc2626", "#fef2f2"),
+                        "Unknown": ("#6b7280", "#f9fafb"),
+                    }
+                    _fg, _bg = _health_colors.get(_health, ("#6b7280", "#f9fafb"))
+                    st.html(f"""
+                    <div style="
+                        background:{_bg};
+                        border:1.5px solid {_fg};
+                        border-radius:8px;
+                        padding:10px 14px;
+                        margin:4px 0 8px;
+                        text-align:center;
+                    ">
+                      <div style="font-size:22px">{_emoji}</div>
+                      <div style="font-weight:700;color:{_fg};font-size:14px">{_health}</div>
+                      <div style="font-size:10px;color:#6b7280;margin-top:2px">{_run_at}</div>
+                    </div>
+                    """)
+
+                    # 요약 지표
+                    _c1, _c2 = st.columns(2)
+                    _c1.metric("🔴 CRITICAL", _summary.get("critical_count", 0))
+                    _c2.metric("⚠️  WARNING", _summary.get("warning_count", 0))
+
+                    # 체크별 상세 (expander)
+                    _checks = _qa_report.get("checks", {})
+                    _status_icons = {
+                        "ok": "✅", "warning": "⚠️", "critical": "🔴", "error": "❌"
+                    }
+                    _check_labels = {
+                        "source_ingestion_count": "소스 수집",
+                        "junk_filtering_ratio": "정크 필터",
+                        "zero_relevance_ratio": "Zero Relevance",
+                        "ranking_stability": "Ranking 안정성",
+                        "cache_ttl_status": "캐시 TTL",
+                        "source_availability": "소스 가용성",
+                    }
+                    with st.expander("📋 체크 상세", expanded=False):
+                        for _chk_key, _chk_data in _checks.items():
+                            _st = _chk_data.get("status", "ok")
+                            _ic = _status_icons.get(_st, "❓")
+                            _label = _check_labels.get(_chk_key, _chk_key)
+                            st.markdown(f"**{_ic} {_label}** — `{_st.upper()}`")
+                            for _w in _chk_data.get("warnings", []):
+                                st.caption(f"  └ {_w}")
+
+            except Exception as _qa_err:
+                st.error(f"QA 패널 로드 실패: {_qa_err}")
+
     # ── Hero Header (탭 바깥, 항상 표시) ────────────
     _render_dashboard_header()
 

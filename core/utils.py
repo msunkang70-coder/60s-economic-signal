@@ -3,8 +3,44 @@ core/utils.py
 공통 유틸리티 함수 모음
 """
 
+import functools
+import logging
 import re
 import hashlib
+
+logger = logging.getLogger("60sec_signal")
+
+
+def safe_execute(default=None, log_prefix=""):
+    """데코레이터: 예외 발생 시 default 반환 + 로깅."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                logger.warning(f"[{log_prefix or func.__name__}] {type(e).__name__}: {e}")
+                return default
+        return wrapper
+    return decorator
+
+
+def safe_float(value, default=0.0) -> float:
+    """안전한 float 변환."""
+    try:
+        return float(str(value).replace(",", "").replace("+", ""))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_json_load(path, default=None):
+    """안전한 JSON 파일 로드."""
+    import json
+    import pathlib as _pathlib
+    try:
+        return json.loads(_pathlib.Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return default if default is not None else {}
 
 
 def clean_text(text: str) -> str:

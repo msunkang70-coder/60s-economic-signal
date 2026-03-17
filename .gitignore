@@ -61,3 +61,7 @@ _ul
 # 임시 백업
 *.bak
 *.bak2
+
+# Daily QA 런타임 로그 (logs/ 디렉토리는 추적, 실제 로그 파일은 제외)
+logs/daily_live_qa.log
+logs/daily_live_qa.log.bak
