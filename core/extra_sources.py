@@ -42,7 +42,9 @@ _RSS_SOURCES = [
     },
     {
         "name": "한국경제",
-        "url": "https://feeds.hankyung.com/article/economy.xml",
+        # feeds.hankyung.com 서브도메인 소멸 (2026-03-17 확인, DNS getaddrinfo failed)
+        # 대체: www.hankyung.com/feed/economy (200 OK, 50건, 안정)
+        "url": "https://www.hankyung.com/feed/economy",
         "category": "한국경제",
         "priority": "TERTIARY",
     },
