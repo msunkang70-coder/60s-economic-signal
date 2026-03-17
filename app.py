@@ -4258,8 +4258,39 @@ def render_ui() -> None:
                         _art_detail = None
 
                 if _art_detail:
-                    # T-23: 4-frame 요약 (impact/risk/opportunity/action이 dict인 경우)
                     _sum_data = _art_detail.get("summary_3lines")
+                    import re as _re_mod
+
+                    # Markdown **bold** → HTML <b>bold</b> 헬퍼
+                    def _md_bold(t: str) -> str:
+                        return _re_mod.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', t) if t else t
+
+                    # V6: 소스 배지
+                    _summary_source = _art_detail.get("summary_source", "")
+                    if _summary_source:
+                        _src_display = {
+                            "groq": ("AI 분석", "#22C55E"), "cache": ("캐시", "#3B82F6"),
+                            "industry_fallback": ("산업 분석", "#F59E0B"),
+                            "smart_fallback": ("자동 분석", "#F97316"),
+                            "snippet_fallback": ("스니펫 분석", "#F97316"),
+                            "snippet_llm": ("AI 분석", "#22C55E"),
+                            "rule_enhanced": ("규칙 분석", "#EF4444"),
+                            "title_guard": ("제목 분석", "#EF4444"),
+                            "minimal_fallback": ("원문 미확보", "#9CA3AF"),
+                        }
+                        _src_label, _src_color = _src_display.get(_summary_source, ("분석", "#6B7280"))
+                        st.html(
+                            f'<span style="font-size:10px;padding:2px 6px;border-radius:4px;'
+                            f'background:{_src_color};color:white;font-weight:600">'
+                            f'🔍 {_src_label}</span>'
+                        )
+
+                    # headline 표시
+                    _headline = _sum_data.get("headline", "") if isinstance(_sum_data, dict) else ""
+                    if _headline:
+                        st.markdown(f"**⭐ {_md_bold(_headline)}**")
+
+                    # 4-frame 요약 (impact/risk/opportunity/action)
                     if isinstance(_sum_data, dict) and "impact" in _sum_data:
                         _frame_items = [
                             ("📊 Impact", _sum_data.get("impact", ""), "#3B82F6"),
@@ -4267,20 +4298,78 @@ def render_ui() -> None:
                             ("💡 Opportunity", _sum_data.get("opportunity", ""), "#22C55E"),
                             ("✅ Action", _sum_data.get("action", ""), "#5B5FEE"),
                         ]
-                        import re as _re_mod
                         _frame_html = ""
                         for _fl, _ft, _fc in _frame_items:
                             if _ft:
-                                # Markdown **bold** → HTML <b>bold</b> 변환
-                                _ft = _re_mod.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', _ft)
-                                _frame_html += (
-                                    f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
-                                    f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
-                                    f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
-                                    f'<div style="font-size:13px;color:#334155;margin-top:2px">{_ft}</div></div>'
-                                )
+                                _ft = _md_bold(_ft)
+                                # Action 필드: bullet 포인트 분리 처리
+                                if "Action" in _fl and ("•" in _ft or "· " in _ft):
+                                    _bullets = [b.strip() for b in _re_mod.split(r'[•·]', _ft) if b.strip()]
+                                    _bullet_html = "".join(
+                                        f'<div style="font-size:13px;color:#334155;padding:2px 0">'
+                                        f'• {b}</div>' for b in _bullets
+                                    )
+                                    _frame_html += (
+                                        f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
+                                        f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
+                                        f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
+                                        f'{_bullet_html}</div>'
+                                    )
+                                else:
+                                    _frame_html += (
+                                        f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
+                                        f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
+                                        f'<span style="font-size:11px;font-weight:700;color:{_fc}">{_fl}</span>'
+                                        f'<div style="font-size:13px;color:#334155;margin-top:2px;'
+                                        f'line-height:1.6">{_ft}</div></div>'
+                                    )
                         if _frame_html:
                             st.html(f'<div style="font-family:Inter,sans-serif">{_frame_html}</div>')
+
+                        # ❓ 경영진 질문 + 📋 점검 항목 (LLM 응답의 questions/checklist 필드)
+                        _questions = _sum_data.get("questions", "") if isinstance(_sum_data, dict) else ""
+                        _checklist_v4 = _sum_data.get("checklist", "") if isinstance(_sum_data, dict) else ""
+
+                        # fallback: questions/checklist가 없으면 industry_config에서 생성
+                        def _fill_tpl(tpl: str, topic: str) -> str:
+                            r = tpl.replace("{context}", topic).replace("{" + topic + "}", topic)
+                            return r
+
+                        if not _questions or not _questions.strip():
+                            try:
+                                _fb_profile = get_profile(_cur_ind)
+                                _fb_qf = _fb_profile.get("questions_frame", [])
+                                _fb_topic = _art.get("title", "")[:20]
+                                if _fb_qf:
+                                    _questions = "\n".join(f"• {_fill_tpl(q, _fb_topic)[:70]}" for q in _fb_qf[:3])
+                            except Exception:
+                                pass
+
+                        if not _checklist_v4 or not _checklist_v4.strip():
+                            try:
+                                _fb_profile2 = get_profile(_cur_ind)
+                                _fb_clf = _fb_profile2.get("checklist_frame", [])
+                                _fb_topic2 = _art.get("title", "")[:20]
+                                if _fb_clf:
+                                    _checklist_v4 = "\n".join(f"• {_fill_tpl(c, _fb_topic2)[:55]}" for c in _fb_clf[:3])
+                            except Exception:
+                                pass
+
+                        if _questions:
+                            _q_html = _md_bold(_questions.replace("\n", "<br>"))
+                            st.markdown(
+                                f'<div style="background:#F0F7FF;border-left:3px solid #3B82F6;padding:8px 12px;margin:4px 0;border-radius:4px;font-size:0.85em">'
+                                f'<strong style="color:#1E40AF">❓ 경영진 질문</strong><br>{_q_html}</div>',
+                                unsafe_allow_html=True,
+                            )
+
+                        if _checklist_v4:
+                            _cl_html = _md_bold(_checklist_v4.replace("\n", "<br>"))
+                            st.markdown(
+                                f'<div style="background:#F0FFF4;border-left:3px solid #22C55E;padding:8px 12px;margin:4px 0;border-radius:4px;font-size:0.85em">'
+                                f'<strong style="color:#166534">📋 점검 항목</strong><br>{_cl_html}</div>',
+                                unsafe_allow_html=True,
+                            )
                     else:
                         # 기존 3줄 요약
                         _pstatus = _art_detail.get("parse_status", "fail")
@@ -4291,21 +4380,6 @@ def render_ui() -> None:
                             )
                         else:
                             st.warning(f"⚠️ 요약 생성 불가: {_art_detail.get('fail_reason', '수집 실패')}")
-
-                    # 전략 질문
-                    _render_article_strategy_questions(_art, _cur_ind)
-
-                    # 체크리스트
-                    try:
-                        _art_checklist = generate_checklist(
-                            _art.get("title", ""), _cur_ind, _MACRO
-                        )
-                        if _art_checklist:
-                            st.markdown("**✅ 액션 체크리스트**")
-                            for _cl_item in _art_checklist:
-                                st.checkbox(_cl_item, key=f"cl_{_art['doc_id']}_{_cl_item[:20]}")
-                    except Exception:
-                        pass
 
                     # 원문 링크
                     if _art.get("url"):
