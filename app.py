@@ -4138,7 +4138,12 @@ def render_ui() -> None:
     if docs:
         # 임팩트 스코어 일괄 산출 + 내림차순 정렬
         _scored_docs = score_articles(docs, _cur_ind, _MACRO)
-        _scored_docs = sorted(_scored_docs, key=lambda d: d.get("impact_score", 1), reverse=True)
+        # no_fetch(본문 추출 불가) 기사는 항상 하위 배치 — Top 3에서 제외
+        _scored_docs = sorted(
+            _scored_docs,
+            key=lambda d: (0 if d.get("no_fetch") or d.get("_google_news") else 1, d.get("impact_score", 1)),
+            reverse=True,
+        )
 
         # 키워드 필터 적용
         if _scroll_kw:

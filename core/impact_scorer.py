@@ -192,7 +192,7 @@ def score_article(
 
     # V9: Google News no_fetch 기사 감점 — 본문 추출 불가 기사가 제목만으로 상위 배치되는 문제 방지
     if article.get("no_fetch") or article.get("_google_news"):
-        normalized = min(normalized, 25.0)  # 최대 2점으로 제한
+        normalized = min(normalized, 10.0)  # 최대 1점으로 제한 (본문 없는 기사)
 
     return _score_to_stars(normalized)
 
