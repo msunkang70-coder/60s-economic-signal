@@ -296,8 +296,24 @@ _RELEVANCE_KW: list[str] = [
     "제조", "중소기업", "스타트업", "벤처", "혁신", "디지털", "반도체",
 ]
 _IRRELEVANT_KW: list[str] = [
-    "동네", "로컬", "하이퍼로컬", "동네책방", "당근", "카카오",
+    # 로컬/소상공인
+    "동네", "로컬", "하이퍼로컬", "동네책방", "당근",
     "지역상권", "골목", "소상공인 창업", "프랜차이즈",
+    # 규제 행정 (수출 규제는 제외)
+    "규제개혁", "규제정보포털", "규제입증요청", "규제합리화",
+    "규제샌드박스", "규제혁신",
+    # 인사/연봉/채용
+    "직원수", "직원 수", "평균 연봉", "연봉 공개", "채용공고",
+    "회장 수령", "임원 보수",
+    # 은행/핀테크 장애
+    "먹통", "접속 장애", "서버 장애", "대기인원",
+    # SNS/엔터
+    "카카오뱅크", "카카오페이", "토스", "네이버페이",
+    "아이돌", "K-POP", "드라마", "영화 흥행",
+    # 부동산
+    "아파트 분양", "청약", "전세", "월세",
+    # 스포츠
+    "프로야구", "프로축구", "올림픽 메달",
 ]
 
 # ADD: 산업 태그 감지 키워드
@@ -598,7 +614,10 @@ def build_strategy_questions(doc: dict, detail: dict | None = None, industry_key
     full_text = title
 
     if detail:
-        full_text += " " + detail.get("summary_3lines", "")
+        _s3 = detail.get("summary_3lines", "")
+        if isinstance(_s3, dict):
+            _s3 = " ".join(str(v) for v in _s3.values() if v)
+        full_text += " " + _s3
         full_text += " " + " ".join(detail.get("keywords", []))
 
     # ── 제목 특정 키워드 추출 (_STOP_WORDS 제외) ──────────────
@@ -817,7 +836,10 @@ def _render_policy_summary(docs: list) -> None:
 
 
 def _render_policy_detail(doc: dict, detail: dict) -> None:
-    full_text  = doc["title"] + " " + detail.get("summary_3lines", "")
+    _s3 = detail.get("summary_3lines", "")
+    if isinstance(_s3, dict):
+        _s3 = " ".join(str(v) for v in _s3.values() if v)
+    full_text  = doc["title"] + " " + _s3
     ptype      = _classify_policy_type(full_text)
     impact     = _impact_terms(full_text)
     risk, opp  = _risk_opportunity(full_text)
@@ -1159,7 +1181,10 @@ def generate_report_html(
 
     signal_html = ""
     if sel_doc and detail:
-        full  = sel_doc["title"] + " " + detail.get("summary_3lines", "")
+        _s3 = detail.get("summary_3lines", "")
+        if isinstance(_s3, dict):
+            _s3 = " ".join(str(v) for v in _s3.values() if v)
+        full  = sel_doc["title"] + " " + _s3
         ptype = _classify_policy_type(full)
         impact = _impact_terms(full)
         risk, opp = _risk_opportunity(full)
@@ -3576,6 +3601,13 @@ def render_ui() -> None:
         )
         if st.session_state.get("selected_industry") != _sel_ind:
             log_event("industry_select", {"industry": _sel_ind})
+            # 산업 변경 시 기사 캐시 초기화 → 새 산업으로 re-fetch
+            st.session_state.pop("docs", None)
+            st.session_state.pop("docs_others", None)
+            st.session_state.pop("docs_fetched_at", None)
+            st.session_state.pop("selected_id", None)
+            st.session_state.pop("last_doc", None)
+            st.session_state.pop("last_detail", None)
         st.session_state["selected_industry"] = _sel_ind
         _profile = get_profile(_sel_ind)
 
@@ -3879,6 +3911,28 @@ def render_ui() -> None:
         st.info("거시지표 데이터 없음 — ECOS API 키 설정 후 업데이트 버튼을 클릭하세요.")
 
     st.divider()
+
+    # ── [2.4] 복합 리스크 지수 ─────────────────────────────────
+    try:
+        from core.risk_index import calculate_risk_index as _calc_risk
+        from views.dashboard_main import render_risk_gauge as _render_rg
+        _risk_data = _calc_risk(_MACRO, _sel_ind)
+        _render_rg(_risk_data)
+    except Exception:
+        pass
+
+    # ── [2.4b] 경쟁사 벤치마킹 ─────────────────────────────────
+    _cp_bench = st.session_state.get("company_profile_v2") or st.session_state.get("company_profile")
+    if _cp_bench and _MACRO:
+        try:
+            from views.benchmark_widget import render_benchmark_card as _render_bench
+            _render_bench(
+                company_profile=_cp_bench,
+                industry_key=_sel_ind,
+                macro_data=_MACRO,
+            )
+        except Exception:
+            pass
 
     # ── [2.5] 시나리오 분석 ──────────────────────────────────
     with st.expander("🔮 시나리오 분석  🚧 개선 준비 중", expanded=False):
@@ -4208,9 +4262,12 @@ def render_ui() -> None:
                             ("💡 Opportunity", _sum_data.get("opportunity", ""), "#22C55E"),
                             ("✅ Action", _sum_data.get("action", ""), "#5B5FEE"),
                         ]
+                        import re as _re_mod
                         _frame_html = ""
                         for _fl, _ft, _fc in _frame_items:
                             if _ft:
+                                # Markdown **bold** → HTML <b>bold</b> 변환
+                                _ft = _re_mod.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', _ft)
                                 _frame_html += (
                                     f'<div style="padding:8px 12px;border-left:3px solid {_fc};'
                                     f'margin-bottom:6px;background:rgba(0,0,0,0.02);border-radius:0 8px 8px 0">'
@@ -4267,7 +4324,8 @@ def render_ui() -> None:
         # 기타 기사 (관련성 낮음)
         _others = st.session_state.get("docs_others", [])
         if _others:
-            with st.expander(f"기타 기사 {len(_others)}건 (관련성 낮음)"):
+            _filtered_total = len(st.session_state.get("docs", [])) + len(_others)
+            with st.expander(f"기타 기사 {len(_others)}건 (관련성 낮음) — {len(_others)}건 필터링됨"):
                 for _od in _others:
                     st.caption(f"📄 {_od['title'][:50]}")
     elif not st.session_state.docs:
@@ -4318,6 +4376,39 @@ def render_ui() -> None:
                         st.error("발송 실패 — 이메일 설정을 확인하세요")
                 except Exception as _e2:
                     st.error(f"발송 오류: {_e2}")
+
+    # ── 분석 품질 대시보드 (V11) ─────────────────────────────────
+    try:
+        from core.summarizer import get_quality_metrics as _get_qm
+        _qm = _get_qm()
+        if _qm.get("total_calls", 0) > 0:
+            with st.expander("📊 분석 품질 대시보드", expanded=False):
+                _q1, _q2, _q3, _q4 = st.columns(4)
+                _q1.metric("AI 분석률", f"{_qm.get('groq_rate', 0)}%")
+                _q2.metric("평균 품질", f"{_qm.get('avg_quality', 0)}/100")
+                _q3.metric("총 분석", f"{_qm['total_calls']}건")
+                _q4.metric("폴백률", f"{_qm.get('fallback_rate', 0)}%")
+                _ind_avg = _qm.get("industry_avg", {})
+                if _ind_avg:
+                    st.caption("산업별 평균 품질: " + " | ".join(f"{k}: {v}점" for k, v in _ind_avg.items()))
+    except Exception:
+        pass
+
+    # ── 성능 병목 리포트 (V13) ─────────────────────────────────
+    try:
+        from core.fetcher import get_fetch_perf_stats as _get_fps
+        from core.article_cache import get_cache as _get_ac
+        _ps = _get_fps()
+        _ac_stats = _get_ac().stats()
+        if _ps.get("calls", 0) > 0:
+            with st.expander("⏱️ 성능 병목 리포트 (V13)", expanded=False):
+                _p1, _p2, _p3, _p4 = st.columns(4)
+                _p1.metric("KDI fetch 합계", f"{_ps['fetch_total_s']:.1f}s")
+                _p2.metric("본문 추출 합계", f"{_ps['extract_total_s']:.1f}s")
+                _p3.metric("LLM 합계", f"{_ps['summarize_total_s']:.1f}s")
+                _p4.metric("캐시 히트율", f"{_ps['cache_hit_rate']}%")
+    except Exception:
+        pass
 
     # ══════════════════════════════════════════════════════════════
     # [6] ⚙️ 워치리스트 설정

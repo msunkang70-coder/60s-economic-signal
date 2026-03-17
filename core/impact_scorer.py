@@ -190,6 +190,10 @@ def score_article(
     raw = a + b + c + d + ind_boost       # 최대 120
     normalized = min(100.0, raw * (100.0 / 120.0))  # 100점 만점 스케일
 
+    # V9: Google News no_fetch 기사 감점 — 본문 추출 불가 기사가 제목만으로 상위 배치되는 문제 방지
+    if article.get("no_fetch") or article.get("_google_news"):
+        normalized = min(normalized, 25.0)  # 최대 2점으로 제한
+
     return _score_to_stars(normalized)
 
 
