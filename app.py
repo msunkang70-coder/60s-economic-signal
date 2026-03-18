@@ -4248,6 +4248,14 @@ def render_ui() -> None:
         _hi_docs = sorted(_hi_docs, key=_sort_key, reverse=True)
         _lo_docs = sorted(_lo_docs, key=lambda d: d.get("impact_score", 1), reverse=True)
 
+        # V17.8.1: 서브카테고리 Top N 게이트
+        # subcategory != "전체"일 때, sub_score=0 기사는 Top 5 밖으로 밀어냄
+        # → sub 매칭 기사가 반드시 상위 노출, 미매칭은 후속 배치
+        if _cur_sub != "전체" and _hi_docs:
+            _sub_match = [d for d in _hi_docs if d.get("_sub_score", 0) >= 1]
+            _sub_miss  = [d for d in _hi_docs if d.get("_sub_score", 0) < 1]
+            _hi_docs = _sub_match + _sub_miss  # 매칭 우선, 미매칭 후속
+
         # 고품질 우선 + 저품질 후속 배치
         _scored_docs = _hi_docs + _lo_docs
 
