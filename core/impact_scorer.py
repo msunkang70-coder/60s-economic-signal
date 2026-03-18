@@ -239,6 +239,11 @@ def score_article(
     h = _subcategory_boost(text, industry_key, subcategory)
 
     raw = a + b + c + d + ind_boost + f + g + h
+
+    # V17.9: macro penalty — 매크로 기사가 특정 산업 카드에서 과대 평가되는 것 방지
+    if article.get("_article_type") == "macro" and industry_key != "일반":
+        raw = max(0.0, raw - 30.0)
+
     # 정규화: subcategory="전체" → 140 (기존), 그 외 → 150
     _norm_base = 140.0 if subcategory == "전체" else 150.0
     normalized = min(100.0, raw * (100.0 / _norm_base))

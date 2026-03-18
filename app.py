@@ -27,6 +27,7 @@ from core.ecos import refresh_macro as _ecos_refresh, _get_api_key as _ecos_get_
 from core.content_manager import load_content_history as _load_history
 from core.industry_config import get_industry_list, get_profile
 from core.subcategory_config import get_subcategory_list, get_subcategory_rules, get_subcategory_label
+from core.article_classifier import classify_article_type
 from core.feedback_store import save_feedback
 from core.impact_scorer import score_article, score_articles
 from core.action_checklist import generate_checklist
@@ -700,11 +701,24 @@ def _filter_relevant_docs(
     relevant, others = [], []
     for d in docs:
         title = d.get("title", "")
+        body_text = d.get("body", "") or d.get("body_text", "") or ""
         has_relevant   = any(kw in title for kw in _RELEVANCE_KW)
         has_irrelevant = any(kw in title for kw in _IRRELEVANT_KW)
         has_ind_block  = bool(_combined_block) and any(kw in title for kw in _combined_block)
 
-        if has_relevant and not has_irrelevant and not has_ind_block:
+        # V17.9: 기사 타입 분류 — macro/industry/company/general
+        _cls = classify_article_type(title, body_text, industry_key)
+        d["_article_type"] = _cls["article_type"]
+        d["_macro_confidence"] = _cls["macro_confidence"]
+
+        # macro 기사는 특정 산업 카드에서 차단 (일반은 허용)
+        _is_macro_blocked = (
+            _cls["article_type"] == "macro"
+            and industry_key != "일반"
+            and _cls["macro_confidence"] >= 0.6
+        )
+
+        if has_relevant and not has_irrelevant and not has_ind_block and not _is_macro_blocked:
             relevant.append(d)
         else:
             others.append(d)
@@ -4359,10 +4373,14 @@ def render_ui() -> None:
                             try:
                                 from core.summarizer import _get_llm_key, summarize_3line as _re_summarize
                                 if _get_llm_key():
+                                    # V17.9: macro 기사 요약 가드 — 산업 전용 해석 방지
+                                    _effective_ind = _cur_ind
+                                    if _art.get("_article_type") == "macro" and _cur_ind != "일반":
+                                        _effective_ind = "일반"
                                     _new_sum, _new_src = _re_summarize(
                                         _art_detail["body_text"],
                                         title=_art.get("title", ""),
-                                        industry_key=_cur_ind,
+                                        industry_key=_effective_ind,
                                     )
                                     if _new_src == "groq":
                                         _art_detail = {**_art_detail, "summary_3lines": _new_sum, "summary_source": "groq"}
