@@ -26,6 +26,7 @@ from core.fetcher import (
 from core.ecos import refresh_macro as _ecos_refresh, _get_api_key as _ecos_get_key
 from core.content_manager import load_content_history as _load_history
 from core.industry_config import get_industry_list, get_profile
+from core.subcategory_config import get_subcategory_list, get_subcategory_rules, get_subcategory_label
 from core.feedback_store import save_feedback
 from core.impact_scorer import score_article, score_articles
 from core.action_checklist import generate_checklist
@@ -314,7 +315,32 @@ _IRRELEVANT_KW: list[str] = [
     "아파트 분양", "청약", "전세", "월세",
     # 스포츠
     "프로야구", "프로축구", "올림픽 메달",
+    # V17.7: 자본시장/거버넌스/정치 일반
+    "투자자 보호", "코스피", "코스닥", "상법 개정", "상법개정",
+    "거버넌스", "지배구조 개선", "주주총회", "의결권",
+    "SK하이닉스", "삼성전자 주가", "주가 전망",
+    "국회 통과", "여야 합의", "정치 일정",
 ]
+
+# V17.7: 산업별 추가 차단 키워드 — 해당 산업과 무관한 주제 차단
+_INDUSTRY_BLOCK_KW: dict[str, list[str]] = {
+    "소비재": [
+        # 자본시장/증시 논평
+        "밸류업", "공매도", "주주환원", "배당 확대", "자사주",
+        "기업가치 제고", "주가순자산", "PBR", "PER",
+        "증시", "주식시장", "시가총액", "상장",
+        # 거버넌스/상법 (소비재 ESG는 별도)
+        "이사회 구성", "사외이사", "감사위원",
+        # 금융/은행업 전용
+        "예금", "대출 금리", "은행 실적", "보험사",
+        "여신", "수신", "BIS 비율",
+    ],
+    "반도체": [
+        # 소비재/유통 전용
+        "K-뷰티", "K-푸드", "화장품", "식품 수출",
+        "유통 채널", "이커머스", "쇼핑",
+    ],
+}
 
 # ADD: 산업 태그 감지 키워드
 _INDUSTRY_TAGS = {
@@ -651,26 +677,55 @@ def build_strategy_questions(doc: dict, detail: dict | None = None, industry_key
 # ══════════════════════════════════════════════════════
 # UI 블록 렌더 함수
 # ══════════════════════════════════════════════════════
-def _filter_relevant_docs(docs: list, industry_key: str = "일반") -> tuple[list, list]:
-    """관련성 높은 문서와 낮은 문서를 분리 반환. 산업 키워드로 관련 기사 우선 정렬."""
+def _filter_relevant_docs(
+    docs: list, industry_key: str = "일반", subcategory: str = "전체",
+) -> tuple[list, list]:
+    """관련성 높은 문서와 낮은 문서를 분리 반환. 산업+서브카테고리 키워드로 관련 기사 우선 정렬.
+
+    V17.7: 산업별 차단 키워드(_INDUSTRY_BLOCK_KW) 적용.
+    V17.8: 서브카테고리 2-Tier 필터 — include/block/boost 규칙 적용.
+           subcategory="전체"이면 기존 로직과 100% 동일 (backward compatible).
+    """
+    # (1) 기존 산업 필터 — 산업별 추가 차단 키워드
+    _ind_block = _INDUSTRY_BLOCK_KW.get(industry_key, [])
+
+    # (2) 서브카테고리 블록 합산 (전체면 빈 리스트 → 기존 동작 유지)
+    _sub_rules = get_subcategory_rules(industry_key, subcategory)
+    _sub_block = _sub_rules.get("block", [])
+    _combined_block = _ind_block + _sub_block if _sub_block else _ind_block
+
+    # (3) include 키워드 (전체면 빈 리스트 → _sub_score 미생성)
+    _sub_include = _sub_rules.get("include", [])
+
     relevant, others = [], []
     for d in docs:
         title = d.get("title", "")
         has_relevant   = any(kw in title for kw in _RELEVANCE_KW)
         has_irrelevant = any(kw in title for kw in _IRRELEVANT_KW)
-        if has_relevant and not has_irrelevant:
+        has_ind_block  = bool(_combined_block) and any(kw in title for kw in _combined_block)
+
+        if has_relevant and not has_irrelevant and not has_ind_block:
             relevant.append(d)
         else:
             others.append(d)
 
-    # 산업 키워드로 관련도 정렬 (키워드 매칭 수 내림차순)
+        # (4) 서브카테고리 include 매칭 → _sub_score 부여 (doc에 저장)
+        if _sub_include:
+            d["_sub_score"] = sum(1 for kw in _sub_include if kw in title)
+        else:
+            d["_sub_score"] = 0  # 전체 → 0 (기존 동작)
+
+    # 산업 + 서브카테고리 키워드로 관련도 정렬
     profile = get_profile(industry_key)
     ind_kws = profile.get("keywords", [])
-    if ind_kws:
-        def _industry_score(doc):
-            title = doc.get("title", "")
-            return sum(1 for kw in ind_kws if kw in title)
-        relevant.sort(key=_industry_score, reverse=True)
+
+    def _combined_score(doc):
+        title = doc.get("title", "")
+        ind_s = sum(1 for kw in ind_kws if kw in title) if ind_kws else 0
+        sub_s = doc.get("_sub_score", 0) * 2  # 서브매칭 2배 가중
+        return ind_s + sub_s
+
+    relevant.sort(key=_combined_score, reverse=True)
 
     return relevant, others
 
@@ -3608,8 +3663,35 @@ def render_ui() -> None:
             st.session_state.pop("selected_id", None)
             st.session_state.pop("last_doc", None)
             st.session_state.pop("last_detail", None)
+            # V17.8: 산업 변경 시 서브카테고리 강제 리셋
+            st.session_state["selected_subcategory"] = "전체"
         st.session_state["selected_industry"] = _sel_ind
         _profile = get_profile(_sel_ind)
+
+        # V17.8: 서브카테고리 셀렉터 (산업 선택 아래)
+        _sub_list = get_subcategory_list(_sel_ind)
+        if len(_sub_list) > 1:
+            _sub_labels = {s: get_subcategory_label(_sel_ind, s) for s in _sub_list}
+            _cur_sub_val = st.session_state.get("selected_subcategory", "전체")
+            if _cur_sub_val not in _sub_list:
+                _cur_sub_val = "전체"
+            _sel_sub = st.selectbox(
+                "세부 분야",
+                options=_sub_list,
+                index=_sub_list.index(_cur_sub_val),
+                format_func=lambda k: _sub_labels.get(k, k),
+                key="_subcategory_sb",
+            )
+            if st.session_state.get("selected_subcategory") != _sel_sub:
+                log_event("subcategory_select", {"subcategory": _sel_sub})
+                # 서브카테고리 변경 시 기사 캐시 초기화
+                st.session_state.pop("docs", None)
+                st.session_state.pop("docs_others", None)
+                st.session_state.pop("docs_fetched_at", None)
+                st.session_state.pop("selected_id", None)
+            st.session_state["selected_subcategory"] = _sel_sub
+        else:
+            st.session_state["selected_subcategory"] = "전체"
 
         # 선택된 산업 정보 표시
         st.markdown(f"**{_profile['icon']} {_profile['label']}**")
@@ -4083,6 +4165,7 @@ def render_ui() -> None:
     st.session_state.setdefault("docs_fetched_at", "")
 
     _cur_ind = st.session_state.get("selected_industry", "일반")
+    _cur_sub = st.session_state.get("selected_subcategory", "전체")  # V17.8
     if not st.session_state.docs:
         with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
             try:
@@ -4094,7 +4177,7 @@ def render_ui() -> None:
                     print(f"[extra_sources] source_stats: {_src_stats}")
                 except Exception as _extra_e:
                     print(f"[extra_sources] 통합 실패, KDI만 사용: {_extra_e}")
-                _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+                _rel, _oth = _filter_relevant_docs(_raw, _cur_ind, _cur_sub)
                 st.session_state.docs = _rel if _rel else _raw
                 st.session_state.docs_others = _oth if _rel else []
                 st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
@@ -4121,7 +4204,7 @@ def render_ui() -> None:
                         print(f"[extra_sources] source_stats: {_src_stats}")
                     except Exception as _extra_e:
                         print(f"[extra_sources] 통합 실패, KDI만 사용: {_extra_e}")
-                    _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+                    _rel, _oth = _filter_relevant_docs(_raw, _cur_ind, _cur_sub)
                     st.session_state.docs = _rel if _rel else _raw
                     st.session_state.docs_others = _oth if _rel else []
                     st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
@@ -4136,14 +4219,37 @@ def render_ui() -> None:
     docs: list = st.session_state.docs
 
     if docs:
-        # 임팩트 스코어 일괄 산출 + 내림차순 정렬
-        _scored_docs = score_articles(docs, _cur_ind, _MACRO)
-        # no_fetch(본문 추출 불가) 기사는 항상 하위 배치 — Top 3에서 제외
-        _scored_docs = sorted(
-            _scored_docs,
-            key=lambda d: (0 if d.get("no_fetch") or d.get("_google_news") else 1, d.get("impact_score", 1)),
-            reverse=True,
-        )
+        # 임팩트 스코어 일괄 산출
+        _scored_docs = score_articles(docs, _cur_ind, _MACRO, subcategory=_cur_sub)
+
+        # ── V17.7 Heuristic Gate: 저품질 기사 Top 3 완전 배제 ──
+        # 배제 조건: no_fetch=True | _google_news=True | 코트라 기사 중 URL 미해독
+        def _is_low_quality(d: dict) -> bool:
+            if d.get("no_fetch") or d.get("_google_news"):
+                return True
+            # 코트라 기사인데 URL이 google.com/news 계열이면 미해독
+            if d.get("source") == "코트라":
+                _url = d.get("url", "")
+                if "news.google.com" in _url or "google.com/rss" in _url:
+                    return True
+            return False
+
+        _hi_docs = [d for d in _scored_docs if not _is_low_quality(d)]  # Top 3 후보
+        _lo_docs = [d for d in _scored_docs if _is_low_quality(d)]      # 하위 배치
+
+        # V17.8: 산업직접연관 + 서브카테고리매칭 + full_body 우선 정렬
+        # (_ind, _sub, _fb, impact_score) 내림차순
+        def _sort_key(d: dict):
+            _ind = 1 if d.get("_ind_score", 0) >= 2 else 0   # 산업 직접 키워드 매칭
+            _sub = 1 if d.get("_sub_score", 0) >= 1 else 0    # 서브카테고리 매칭
+            _fb = 1 if d.get("analysis_source") == "full_body" else 0
+            return (_ind, _sub, _fb, d.get("impact_score", 1))
+
+        _hi_docs = sorted(_hi_docs, key=_sort_key, reverse=True)
+        _lo_docs = sorted(_lo_docs, key=lambda d: d.get("impact_score", 1), reverse=True)
+
+        # 고품질 우선 + 저품질 후속 배치
+        _scored_docs = _hi_docs + _lo_docs
 
         # 키워드 필터 적용
         if _scroll_kw:
@@ -4161,7 +4267,8 @@ def render_ui() -> None:
 
         _fetched_at = st.session_state.get("docs_fetched_at", "")
         if _fetched_at:
-            st.caption(f"기사 {len(_scored_docs)}건 | 기준: {_fetched_at}(KST) | 임팩트 스코어 높은 순")
+            _hi_cnt = len([d for d in _scored_docs if not _is_low_quality(d)])
+            st.caption(f"기사 {len(_scored_docs)}건 (본문확보 {_hi_cnt}건) | 기준: {_fetched_at}(KST) | 임팩트 스코어 높은 순")
 
         # ── T-23: 임팩트 Top 3 + 더보기 구조 ──────────────
         _TOP_N = 3
@@ -4692,7 +4799,7 @@ def render_ui() -> None:
     # [T-08] with st.spinner("KDI 나라경제 목록 자동 수집 중..."):
     # [T-08] try:
     # [T-08] _raw = fetch_list(_KDI_URL, 20)
-    # [T-08] _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+    # [T-08] _rel, _oth = _filter_relevant_docs(_raw, _cur_ind, _cur_sub)
     # [T-08] st.session_state.docs = _rel if _rel else _raw
     # [T-08] st.session_state.docs_others = _oth if _rel else []
     # [T-08] st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")
@@ -4716,7 +4823,7 @@ def render_ui() -> None:
     # [T-08] with st.spinner("목록 수집 중..."):
     # [T-08] try:
     # [T-08] _raw = fetch_list(_KDI_URL, int(top_n))
-    # [T-08] _rel, _oth = _filter_relevant_docs(_raw, _cur_ind)
+    # [T-08] _rel, _oth = _filter_relevant_docs(_raw, _cur_ind, _cur_sub)
     # [T-08] st.session_state.docs = _rel if _rel else _raw
     # [T-08] st.session_state.docs_others = _oth if _rel else []
     # [T-08] st.session_state.docs_fetched_at = _dt.now().strftime("%Y-%m-%d %H:%M")

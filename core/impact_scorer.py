@@ -8,13 +8,18 @@ core/impact_scorer.py
   C. 정책 유형 (0~20): 위기대응=20, 규제=15, 구조개편=12, 지원=8, 미분류=5
   D. 시급성 (0~20): 키워드당 +4 (상한 20)
   E. 산업연관 부스트 (0~20): _ind_score × 4 (V7 추가)
-  합산(최대 120) → 100점 스케일 정규화 → 1~5 매핑
+  F. 출처 신뢰도 (0~10): 정부/기관 > 무역협회 > 주요언론 (V17.7)
+  G. 본문 품질 (0~10): full_body > partial_body > snippet (V17.7)
+  H. 서브카테고리 부스트 (0~10): boost 키워드당 +2.5, subcategory="전체"→0 (V17.8)
+  합산(최대 140 or 150) → 100점 스케일 정규화 → 1~5 매핑
+  정규화: subcategory="전체"→140, subcategory≠"전체"→150 (backward compatible)
 """
 
 import copy
 import logging
 
 from core.industry_config import get_profile
+from core.subcategory_config import get_subcategory_rules
 
 _log = logging.getLogger(__name__)
 
@@ -32,6 +37,27 @@ _URGENCY_KW = [
     "즉시", "긴급", "시행", "발효", "폐지",
     "단기", "올해", "분기", "당장", "확대", "강화", "변경",
 ]
+
+# ── V17.7: 출처 신뢰도 (상한 10) ────────────────────────────
+# 정부/공공 기관 > 무역/통상 기관 > 주요 언론사 > 기타
+_SOURCE_RELIABILITY: dict[str, float] = {
+    "KDI":       10.0,   # 국책 연구기관
+    "산업부":     10.0,   # 정부 부처
+    "KITA":       8.0,   # 무역협회
+    "코트라":      8.0,   # 대한무역투자진흥공사
+    "연합뉴스경제": 6.0,   # 주요 통신사
+    "매일경제":    6.0,   # 주요 경제지
+    "한국경제":    6.0,   # 주요 경제지
+}
+_SOURCE_RELIABILITY_DEFAULT = 3.0
+
+# ── V17.7: 본문 품질 (상한 10) ──────────────────────────────
+_BODY_QUALITY_SCORE: dict[str, float] = {
+    "full_body":    10.0,   # 전문 확보 (300자+)
+    "partial_body":  5.0,   # 부분 본문 (120~299자)
+    "snippet":       2.0,   # 스니펫 (<120자)
+    "minimal":       0.0,   # 최소 fallback
+}
 
 # ── 거시지표 normal 범위 (벗어나면 가산점) ──────────────────
 _MACRO_THRESHOLDS = {
@@ -159,10 +185,26 @@ def _score_to_stars(total: float) -> int:
     return 1
 
 
+def _subcategory_boost(text: str, industry_key: str, subcategory: str) -> float:
+    """H. 서브카테고리 부스트 (0~10). boost 키워드당 +2.5, 상한 10.
+
+    subcategory="전체" → 항상 0.0 (기존 동작 유지).
+    """
+    if subcategory == "전체":
+        return 0.0
+    sub_rules = get_subcategory_rules(industry_key, subcategory)
+    boost_kws = sub_rules.get("boost", [])
+    if not boost_kws:
+        return 0.0
+    score = sum(2.5 for kw in boost_kws if kw in text)
+    return min(10.0, score)
+
+
 def score_article(
     article: dict,
     industry_key: str,
     macro_data: dict | None = None,
+    subcategory: str = "전체",
 ) -> int:
     """기사 1건의 산업별 임팩트 점수 (1~5).
 
@@ -170,6 +212,7 @@ def score_article(
         article: {"title": str, "date": str, ...} — body는 있을 수도 없을 수도
         industry_key: 산업 키
         macro_data: app.py의 _MACRO (선택, 없으면 거시 연동 점수 0)
+        subcategory: 서브카테고리 키 (기본 "전체" → 기존 로직 유지)
 
     Returns:
         int: 1~5
@@ -187,8 +230,18 @@ def score_article(
     # V7: filter_relevant_docs의 _ind_score 부스트 반영 (산업 연관 기사 우선)
     # V8: 전체 합산을 100점 만점으로 정규화 — ind_boost가 높아도 5점 편향 방지
     ind_boost = min(20.0, article.get("_ind_score", 0) * 4.0)
-    raw = a + b + c + d + ind_boost       # 최대 120
-    normalized = min(100.0, raw * (100.0 / 120.0))  # 100점 만점 스케일
+
+    # V17.7: 출처 신뢰도 (F) + 본문 품질 (G)
+    f = _SOURCE_RELIABILITY.get(article.get("source", ""), _SOURCE_RELIABILITY_DEFAULT)
+    g = _BODY_QUALITY_SCORE.get(article.get("analysis_source", ""), _SOURCE_RELIABILITY_DEFAULT)
+
+    # V17.8: 서브카테고리 부스트 (H) — 전체면 0, 정규화 기준도 분리
+    h = _subcategory_boost(text, industry_key, subcategory)
+
+    raw = a + b + c + d + ind_boost + f + g + h
+    # 정규화: subcategory="전체" → 140 (기존), 그 외 → 150
+    _norm_base = 140.0 if subcategory == "전체" else 150.0
+    normalized = min(100.0, raw * (100.0 / _norm_base))
 
     # V9: Google News no_fetch 기사 감점 — 본문 추출 불가 기사가 제목만으로 상위 배치되는 문제 방지
     if article.get("no_fetch") or article.get("_google_news"):
@@ -216,16 +269,19 @@ def score_articles(
     articles: list[dict],
     industry_key: str,
     macro_data: dict | None = None,
+    subcategory: str = "전체",
 ) -> list[dict]:
     """기사 리스트에 'impact_score' 키를 추가하여 반환 (원본 수정 X, 복사).
 
     V8: 3단계 그룹 정렬 — ① 산업 연관도 그룹(직접>확장>무관련) ② 그룹 내 impact_score.
-    산업 직접 키워드 매칭 기사가 항상 확장/무관련 기사보다 위에 배치됩니다.
+    V17.8: subcategory 파라미터 전달 → score_article()에서 H 부스트 적용.
     """
     scored = []
     for art in articles:
         art_copy = copy.copy(art)
-        art_copy["impact_score"] = score_article(art, industry_key, macro_data)
+        art_copy["impact_score"] = score_article(
+            art, industry_key, macro_data, subcategory=subcategory,
+        )
         scored.append(art_copy)
     # V8: 그룹 우선 → 그룹 내 impact 정렬
     scored.sort(key=lambda x: (
@@ -697,9 +753,12 @@ def score_article_v2(
     b = _macro_score(text, macro_data, industry_key)
     c = _policy_score(text)
     d = _urgency_score(text)
+    # V17.7: 출처 신뢰도 + 본문 품질
+    f = _SOURCE_RELIABILITY.get(article.get("source", ""), _SOURCE_RELIABILITY_DEFAULT)
+    g = _BODY_QUALITY_SCORE.get(article.get("analysis_source", ""), _SOURCE_RELIABILITY_DEFAULT)
 
-    raw = a + b + c + d
-    stars = _score_to_stars(raw)
+    raw = a + b + c + d + f + g
+    stars = _score_to_stars(min(100.0, raw * (100.0 / 140.0)))
 
     # confidence 결정
     if macro_data and signal:
@@ -714,6 +773,8 @@ def score_article_v2(
         {"name": "macro", "score": b, "max": 30.0},
         {"name": "policy", "score": c, "max": 20.0},
         {"name": "urgency", "score": d, "max": 20.0},
+        {"name": "source_reliability", "score": f, "max": 10.0},
+        {"name": "body_quality", "score": g, "max": 10.0},
     ]
 
     policy_type = _detect_policy_type(text)
